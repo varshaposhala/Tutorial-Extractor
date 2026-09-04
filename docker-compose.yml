@@ -1,0 +1,13 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      SELENIUM_HEADLESS: "1"
+      SELENIUM_NO_SANDBOX: "1"
+      ACCESS_CODE: "${ACCESS_CODE:-}"
+      SECRET_KEY: "${SECRET_KEY:-change-me}"
+    shm_size: "2gb"
+    restart: unless-stopped

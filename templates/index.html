@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Learning Resource Extractor</title>
+    <meta name="robots" content="noindex, nofollow" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v=6" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <p class="kicker">NKB admin helper · form v6 (resource, course, topic, unit)</p>
+        <h1>Learning Resource Extractor</h1>
+        <p class="lede">
+          Pick one task. Each path uses different inputs and steps, then writes
+          Excel and CSV grouped by unit name, with tutorial steps in order.
+          <code>DEFAULT_QUESTIONS</code> steps are skipped.
+        </p>
+      </header>
+
+      <div class="task-picker" role="tablist" aria-label="Extraction tasks">
+        <button type="button" class="task-card is-active" data-task="resource" role="tab" aria-selected="true">
+          <span class="task-num">Task 1</span>
+          <strong>Learning resource ID</strong>
+          <span>Go straight to admin. No learning portal login.</span>
+        </button>
+        <button type="button" class="task-card" data-task="course" role="tab" aria-selected="false">
+          <span class="task-num">Task 2</span>
+          <strong>Course ID</strong>
+          <span>Walk every topic, keep TUTORIAL units, then extract.</span>
+        </button>
+        <button type="button" class="task-card" data-task="topic" role="tab" aria-selected="false">
+          <span class="task-num">Task 3</span>
+          <strong>Topic ID</strong>
+          <span>Open one topic, keep TUTORIAL units, then extract.</span>
+        </button>
+        <button type="button" class="task-card" data-task="unit" role="tab" aria-selected="false">
+          <span class="task-num">Task 4</span>
+          <strong>Unit ID</strong>
+          <span>Open only the units you paste, then extract those sets.</span>
+        </button>
+      </div>
+
+      <main class="layout">
+        <form id="extract-form" class="panel" novalidate>
+          <input type="hidden" name="task" id="task-field" value="resource" />
+          <h2 id="task-title">Learning resource ID</h2>
+          <ol id="task-steps" class="steps"></ol>
+          {% if access_code_required %}
+          <label>
+            Access code
+            <input type="password" name="access_code" autocomplete="off" required />
+          </label>
+          {% endif %}
+
+          <div id="fields-resource" class="field-group">
+            <label>
+              Learning resource ID(s)
+              <textarea
+                name="resource_ids"
+                rows="5"
+                placeholder="One UUID per line"
+              ></textarea>
+            </label>
+          </div>
+
+          <div id="fields-topic" class="field-group" hidden>
+            <label>
+              Topic ID(s)
+              <textarea
+                name="topic_ids"
+                rows="4"
+                placeholder="Topic UUID, or a URL with t_id=..."
+              ></textarea>
+            </label>
+          </div>
+
+          <div id="fields-unit" class="field-group" hidden>
+            <label>
+              Unit ID(s)
+              <textarea
+                name="unit_ids"
+                rows="5"
+                placeholder="Unit UUID, or a URL with s_id=..."
+              ></textarea>
+            </label>
+            <label>
+              Topic ID (optional)
+              <input
+                type="text"
+                name="topic_id"
+                placeholder="Skip the topic scan if you already have t_id"
+                autocomplete="off"
+              />
+            </label>
+          </div>
+
+          <div id="fields-course" class="field-group" hidden>
+            <label>
+              Course ID or course URL
+              <input
+                type="text"
+                name="course_id"
+                placeholder="176b34ed-85c8-496f-974b-06719b6b4567"
+                autocomplete="off"
+              />
+            </label>
+          </div>
+
+          <div id="fields-portal" class="field-group" hidden>
+            <label>
+              Mobile number
+              <input
+                type="tel"
+                name="phone"
+                inputmode="numeric"
+                placeholder="10-digit number for learning.ccbp.in"
+                autocomplete="tel"
+              />
+            </label>
+            <label>
+              OTP
+              <input
+                id="portal-otp"
+                type="text"
+                name="portal_otp"
+                inputmode="numeric"
+                pattern="[0-9]{6}"
+                maxlength="6"
+                minlength="6"
+                placeholder="123456"
+                autocomplete="off"
+              />
+            </label>
+          </div>
+
+          <div id="fields-admin" class="field-group">
+            <label>
+              Admin username
+              <input type="text" name="username" autocomplete="username" required />
+            </label>
+            <label>
+              Admin password
+              <input type="password" name="password" autocomplete="current-password" required />
+            </label>
+          </div>
+
+          <p id="task-hint" class="hint"></p>
+          <button type="submit" id="start-btn">Extract from resource IDs</button>
+        </form>
+
+        <section class="panel log-panel">
+          <div class="log-head">
+            <h2>Progress</h2>
+            <span id="status-pill" class="pill">Idle</span>
+          </div>
+          <ol id="log" class="log" aria-live="polite"></ol>
+          <div id="summaries" class="summaries" hidden></div>
+          <div id="downloads" class="downloads" hidden>
+            <a id="xlsx-link" class="download" href="#">Download Excel</a>
+            <a id="csv-link" class="download secondary" href="#">Download CSV</a>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="{{ url_for('static', filename='app.js') }}?v=6"></script>
+  </body>
+</html>

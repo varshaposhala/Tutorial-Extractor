@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: learning-resource-extractor
+    runtime: docker
+    plan: standard
+    healthCheckPath: /health
+    envVars:
+      - key: SELENIUM_HEADLESS
+        value: "1"
+      - key: SELENIUM_NO_SANDBOX
+        value: "1"
+      - key: ACCESS_CODE
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
