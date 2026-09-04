@@ -178,7 +178,39 @@ def textarea_value(driver: webdriver.Remote, element_id: str) -> str:
         return ""
 
 
-def fetch_resource_content(driver: webdriver.Remote, resource_id: str, log: ProgressFn) -> str:
+def input_value(driver: webdriver.Remote, element_id: str) -> str:
+    try:
+        el = driver.find_element(By.ID, element_id)
+        return (el.get_attribute("value") or el.text or "").strip()
+    except NoSuchElementException:
+        return ""
+
+
+def fetch_admin_title(driver: webdriver.Remote) -> str:
+    for element_id in (
+        "id_title",
+        "id_name",
+        "id_title_en",
+        "id_name_en",
+        "id_display_name",
+    ):
+        value = input_value(driver, element_id)
+        if value:
+            return value
+    try:
+        heading = driver.find_element(By.CSS_SELECTOR, "#content h1")
+        text = (heading.text or "").strip()
+        for prefix in ("Change learning resource", "Change Learning resource"):
+            if text.lower().startswith(prefix.lower()):
+                text = text[len(prefix) :].strip(" :-\u2013")
+        if text and text.lower() not in {"change learning resource", "learning resource"}:
+            return text
+    except NoSuchElementException:
+        pass
+    return ""
+
+
+def fetch_resource_content(driver: webdriver.Remote, resource_id: str, log: ProgressFn) -> tuple[str, str]:
     url = (
         f"{BASE_URL}/admin/nkb_learning_resource/learningresource/"
         f"{resource_id}/change/"
@@ -190,11 +222,14 @@ def fetch_resource_content(driver: webdriver.Remote, resource_id: str, log: Prog
     if "doesn’t exist" in driver.page_source or "doesn't exist" in driver.page_source:
         raise ExtractError(f"Learning resource not found: {resource_id}")
     content = textarea_value(driver, "id_content_en")
+    title = fetch_admin_title(driver)
+    if title:
+        log(f"unit/title: {title}")
     if content:
         log(f"content_en found ({len(content)} characters).")
     else:
         log("content_en is empty.")
-    return content
+    return content, title
 
 
 def first_matching_href(driver: webdriver.Remote, path_prefix: str) -> str | None:
@@ -350,7 +385,7 @@ def fetch_step_content(
 def extract_one_resource(
     driver: webdriver.Remote, resource_id: str, log: ProgressFn
 ) -> dict:
-    content_en = fetch_resource_content(driver, resource_id, log)
+    content_en, admin_title = fetch_resource_content(driver, resource_id, log)
     tutorial_id = fetch_tutorial_id(driver, resource_id, log)
     summaries = collect_step_rows(driver, tutorial_id, log)
     steps: list[dict] = []
@@ -361,6 +396,8 @@ def extract_one_resource(
         "resource_id": resource_id,
         "tutorial_id": tutorial_id,
         "content_en": content_en,
+        "title": admin_title,
+        "unit_name": admin_title,
         "steps": steps,
         "error": "",
     }
@@ -403,13 +440,40 @@ def _result_sort_key(result: dict):
     )
 
 
+def _group_unit_rows(results: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    order: list[str] = []
+    for result in sorted(results, key=_result_sort_key):
+        unit_id = str(result.get("unit_id") or "").strip()
+        unit_name = str(result.get("unit_name") or result.get("title") or "").strip()
+        key = unit_id.lower() if unit_id else f"resource:{result.get('resource_id')}"
+        if key not in grouped:
+            grouped[key] = {"unit_id": unit_id, "unit_name": unit_name, "parts": []}
+            order.append(key)
+        elif not grouped[key]["unit_name"] and unit_name:
+            grouped[key]["unit_name"] = unit_name
+        content = _unit_content(result)
+        if content:
+            grouped[key]["parts"].append(content)
+    rows = []
+    for key in order:
+        item = grouped[key]
+        rows.append(
+            {
+                "unit_id": item["unit_id"],
+                "unit_name": item["unit_name"],
+                "unit_content": "\n\n".join(item["parts"]),
+            }
+        )
+    return rows
+
+
 def write_outputs(results: list[dict], out_dir: Path) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     ordered = sorted(results, key=_result_sort_key)
 
     resource_rows = []
-    unit_rows = []
     step_rows = []
     for result in ordered:
         unit_name = result.get("unit_name") or result.get("title") or ""
@@ -427,21 +491,6 @@ def write_outputs(results: list[dict], out_dir: Path) -> tuple[Path, Path]:
                 "tutorial_id": result.get("tutorial_id", ""),
                 "content_en": result.get("content_en", ""),
                 "step_count": len(_sorted_steps(result.get("steps") or [])),
-                "error": result.get("error", ""),
-            }
-        )
-        unit_rows.append(
-            {
-                "unit_order": _num(result.get("unit_order")),
-                "unit_name": unit_name,
-                "unit_id": result.get("unit_id", ""),
-                "topic_name": result.get("topic_name", ""),
-                "topic_id": result.get("topic_id", ""),
-                "title": result.get("title", ""),
-                "resource_id": result["resource_id"],
-                "tutorial_id": result.get("tutorial_id", ""),
-                "step_count": len(_sorted_steps(result.get("steps") or [])),
-                "content": _unit_content(result),
                 "error": result.get("error", ""),
             }
         )
@@ -466,18 +515,47 @@ def write_outputs(results: list[dict], out_dir: Path) -> tuple[Path, Path]:
                 }
             )
 
+    units_df = pd.DataFrame(_group_unit_rows(ordered))
+    if units_df.empty:
+        units_df = pd.DataFrame(columns=["unit_id", "unit_name", "unit_content"])
+    else:
+        units_df = units_df[["unit_id", "unit_name", "unit_content"]]
     resources_df = pd.DataFrame(resource_rows)
-    units_df = pd.DataFrame(unit_rows)
     steps_df = pd.DataFrame(step_rows)
 
-    csv_path = out_dir / f"tutorial_steps_{stamp}.csv"
-    xlsx_path = out_dir / f"tutorial_steps_{stamp}.xlsx"
-    steps_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    csv_path = out_dir / f"unit_content_{stamp}.csv"
+    xlsx_path = out_dir / f"unit_content_{stamp}.xlsx"
+    units_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-        units_df.to_excel(writer, sheet_name="content_by_unit", index=False)
+        units_df.to_excel(writer, sheet_name="content_by_unit_name", index=False)
         steps_df.to_excel(writer, sheet_name="tutorial_steps", index=False)
         resources_df.to_excel(writer, sheet_name="resource", index=False)
     return csv_path, xlsx_path
+
+
+def _meta_for(resource_id: str, meta: dict) -> dict:
+    if resource_id in meta:
+        return dict(meta.get(resource_id) or {})
+    lower = resource_id.lower()
+    for key, value in meta.items():
+        if str(key).lower() == lower:
+            return dict(value or {})
+    return {}
+
+
+def _merge_resource_result(result: dict, extra: dict) -> dict:
+    merged = dict(result)
+    for key, value in extra.items():
+        if key == "error":
+            continue
+        if value in ("", None) and merged.get(key) not in ("", None, []):
+            continue
+        merged[key] = value
+    if not merged.get("unit_name"):
+        merged["unit_name"] = merged.get("title") or ""
+    if not merged.get("title"):
+        merged["title"] = merged.get("unit_name") or ""
+    return merged
 
 
 def extract_resources(
@@ -504,22 +582,25 @@ def extract_resources(
         login(driver, username, password, progress)
         for index, resource_id in enumerate(resource_ids, start=1):
             progress(f"Resource {index}/{len(resource_ids)}: {resource_id}")
-            extra = dict(meta.get(resource_id) or {})
+            extra = _meta_for(resource_id, meta)
             try:
                 result = extract_one_resource(driver, resource_id, progress)
-                result.update(extra)
-                results.append(result)
+                results.append(_merge_resource_result(result, extra))
             except (ExtractError, TimeoutException, WebDriverException) as exc:
                 progress(f"Failed {resource_id}: {exc}")
                 results.append(
-                    {
-                        "resource_id": resource_id,
-                        "tutorial_id": "",
-                        "content_en": "",
-                        "steps": [],
-                        "error": str(exc),
-                        **extra,
-                    }
+                    _merge_resource_result(
+                        {
+                            "resource_id": resource_id,
+                            "tutorial_id": "",
+                            "content_en": "",
+                            "title": "",
+                            "unit_name": "",
+                            "steps": [],
+                            "error": str(exc),
+                        },
+                        extra,
+                    )
                 )
         csv_path, xlsx_path = write_outputs(results, out_dir)
         progress("Finished writing CSV and Excel.")

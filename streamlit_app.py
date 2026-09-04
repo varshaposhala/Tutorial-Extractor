@@ -121,22 +121,22 @@ status_box = st.empty()
 downloads = st.container()
 summaries_box = st.container()
 
-if "xlsx_bytes" in st.session_state:
-    with downloads:
-        st.download_button(
-            "Download Excel",
-            data=st.session_state["xlsx_bytes"],
-            file_name=st.session_state.get("xlsx_name", "tutorial_steps.xlsx"),
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="xlsx-replay",
-        )
-        st.download_button(
-            "Download CSV",
-            data=st.session_state["csv_bytes"],
-            file_name=st.session_state.get("csv_name", "tutorial_steps.csv"),
-            mime="text/csv",
-            key="csv-replay",
-        )
+# if "xlsx_bytes" in st.session_state:
+#     with downloads:
+#         st.download_button(
+#             "Download Excel (content by unit name)",
+#             data=st.session_state["xlsx_bytes"],
+#             file_name=st.session_state.get("xlsx_name", "unit_content.xlsx"),
+#             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+#             key="xlsx-replay",
+#         )
+#         st.download_button(
+#             "Download CSV (unit id, unit name, unit content)",
+#             data=st.session_state["csv_bytes"],
+#             file_name=st.session_state.get("csv_name", "unit_content.csv"),
+#             mime="text/csv",
+#             key="csv-replay",
+#         )
 
 if submitted:
     logs: list[str] = []
@@ -205,14 +205,14 @@ if submitted:
     status_box.success("Done. Files are ready to download.")
     with downloads:
         st.download_button(
-            "Download Excel",
+            "Download Excel (content by unit name)",
             data=st.session_state["xlsx_bytes"],
             file_name=st.session_state["xlsx_name"],
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="xlsx-done",
         )
         st.download_button(
-            "Download CSV",
+            "Download CSV (unit id, unit name, unit content)",
             data=st.session_state["csv_bytes"],
             file_name=st.session_state["csv_name"],
             mime="text/csv",

@@ -307,21 +307,37 @@ def wait_for_set_details(driver: WebDriver, seen_ids: set[str], timeout: int = C
 def resources_from_set_payload(payload) -> list[dict]:
     found: list[dict] = []
     seen: set[str] = set()
+    fallback_title = ""
+    if isinstance(payload, dict):
+        fallback_title = str(
+            payload.get("title")
+            or payload.get("name")
+            or payload.get("set_name")
+            or payload.get("learning_set_name")
+            or ""
+        ).strip()
 
-    def walk(node) -> None:
+    def walk(node, inherited_title: str = "") -> None:
         if isinstance(node, dict):
+            title = str(
+                node.get("title")
+                or node.get("name")
+                or node.get("unit_name")
+                or inherited_title
+                or fallback_title
+                or ""
+            ).strip()
             resource_id = str(node.get("resource_id") or "").strip()
-            title = str(node.get("title") or node.get("name") or "").strip()
             if UUID_RE.fullmatch(resource_id) and resource_id not in seen:
                 seen.add(resource_id)
                 found.append({"resource_id": resource_id, "title": title})
             for value in node.values():
-                walk(value)
+                walk(value, title or inherited_title)
         elif isinstance(node, list):
             for item in node:
-                walk(item)
+                walk(item, inherited_title)
 
-    walk(payload)
+    walk(payload, fallback_title)
     return found
 
 
@@ -484,9 +500,31 @@ def wait_for_topic_units(
 
 def unit_content_type(unit: dict) -> str:
     details = unit.get("learning_resource_set_unit_details") or {}
+    if not isinstance(details, dict):
+        details = {}
     for value in (details.get("content_type"), unit.get("content_type")):
         text = str(value or "").strip().upper()
         if text:
+            return text
+    return ""
+
+
+def unit_name_from_unit(unit: dict) -> str:
+    details = unit.get("learning_resource_set_unit_details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    for value in (
+        details.get("name"),
+        details.get("title"),
+        details.get("unit_name"),
+        details.get("display_name"),
+        unit.get("name"),
+        unit.get("title"),
+        unit.get("unit_name"),
+        unit.get("display_name"),
+    ):
+        text = str(value or "").strip()
+        if text and text.upper() not in {"TUTORIAL", "DEFAULT", "LEARNING_SET"}:
             return text
     return ""
 
@@ -507,13 +545,12 @@ def _num(value) -> int:
 
 
 def as_unit_record(course_id: str, topic_id: str, topic_name: str, unit: dict) -> dict:
-    details = unit.get("learning_resource_set_unit_details") or {}
     return {
         "course_id": course_id,
         "topic_id": topic_id,
         "topic_name": topic_name,
         "unit_id": str(unit.get("unit_id") or "").strip(),
-        "unit_name": str(details.get("name") or "").strip(),
+        "unit_name": unit_name_from_unit(unit),
         "unit_order": _num(unit.get("order")),
         "content_type": unit_content_type(unit) or "TUTORIAL",
     }
@@ -743,10 +780,12 @@ def collect_set_resources(
         for resource in resources:
             resource_id = resource["resource_id"]
             title = resource.get("title") or unit.get("unit_name") or ""
+            unit_name = unit.get("unit_name") or title
             if resource_id in seen_resource_ids:
                 continue
             seen_resource_ids.add(resource_id)
-            log(f"  title: {title}")
+            log(f"  unit_name: {unit_name or '-'}")
+            log(f"  title: {title or '-'}")
             log(f"  resource_id: {resource_id}")
             collected.append(
                 {
@@ -756,7 +795,7 @@ def collect_set_resources(
                     "topic_id": unit.get("topic_id", ""),
                     "topic_name": unit.get("topic_name", ""),
                     "unit_id": unit["unit_id"],
-                    "unit_name": unit.get("unit_name") or title,
+                    "unit_name": unit_name,
                     "unit_order": _num(unit.get("unit_order")),
                     "content_type": unit.get("content_type", ""),
                 }
@@ -782,18 +821,7 @@ def _match_requested_units(
         unit_id = str(unit.get("unit_id") or "").strip()
         if unit_id.lower() not in wanted:
             continue
-        details = unit.get("learning_resource_set_unit_details") or {}
-        matched.append(
-            {
-                "course_id": course_id,
-                "topic_id": topic_id,
-                "topic_name": topic_name,
-                "unit_id": unit_id,
-                "unit_name": str(details.get("name") or "").strip(),
-                "unit_order": _num(unit.get("order")),
-                "content_type": unit_content_type(unit),
-            }
-        )
+        matched.append(as_unit_record(course_id, topic_id, topic_name, unit))
     return matched
 
 
