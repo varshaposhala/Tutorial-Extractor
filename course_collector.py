@@ -131,6 +131,45 @@ def parse_unit_refs(raw: str) -> list[dict]:
     return refs
 
 
+JS_CAPTURE_HOOK = """
+(() => {
+  if (window.__nwCaptureInstalled) return;
+  window.__nwCaptureInstalled = true;
+  window.__nwCaptured = window.__nwCaptured || [];
+  const push = (url, text) => {
+    try {
+      window.__nwCaptured.push({ url: String(url || ""), body: String(text || "") });
+    } catch (e) {}
+  };
+  const origFetch = window.fetch;
+  if (typeof origFetch === "function") {
+    window.fetch = async function (...args) {
+      const res = await origFetch.apply(this, args);
+      try {
+        const req = args[0];
+        const url = typeof req === "string" ? req : (req && req.url) || res.url;
+        const clone = res.clone();
+        clone.text().then((text) => push(url, text)).catch(() => {});
+      } catch (e) {}
+      return res;
+    };
+  }
+  const origOpen = XMLHttpRequest.prototype.open;
+  const origSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    this.__nwUrl = url;
+    return origOpen.call(this, method, url, ...rest);
+  };
+  XMLHttpRequest.prototype.send = function (...args) {
+    this.addEventListener("load", function () {
+      push(this.__nwUrl || this.responseURL, this.responseText);
+    });
+    return origSend.apply(this, args);
+  };
+})();
+"""
+
+
 def _visible(elements):
     for element in elements:
         try:
@@ -140,9 +179,73 @@ def _visible(elements):
             continue
 
 
+def _human_name(*values) -> str:
+    skipped = {"TUTORIAL", "DEFAULT", "LEARNING_SET", "DEFAULT_QUESTIONS"}
+    for value in values:
+        text = str(value or "").strip()
+        if text and not UUID_RE.fullmatch(text) and text.upper() not in skipped:
+            return text
+    return ""
+
+
+def _unit_id_of(node: dict) -> str:
+    return str((node or {}).get("unit_id") or (node or {}).get("unitId") or "").strip()
+
+
+def _topic_id_of(node: dict) -> str:
+    return str((node or {}).get("topic_id") or (node or {}).get("topicId") or "").strip()
+
+
+def _details_dict(node: dict) -> dict:
+    if not isinstance(node, dict):
+        return {}
+    for key in (
+        "learning_resource_set_unit_details",
+        "learningResourceSetUnitDetails",
+        "unit_details",
+        "unitDetails",
+    ):
+        value = node.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _install_js_capture(driver: WebDriver) -> None:
+    try:
+        driver.execute_cdp_cmd("Page.enable", {})
+    except Exception:
+        pass
+    try:
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument", {"source": JS_CAPTURE_HOOK}
+        )
+    except Exception:
+        pass
+    try:
+        driver.execute_script(JS_CAPTURE_HOOK)
+    except Exception:
+        pass
+
+
+def _js_capture_ready(driver: WebDriver) -> bool:
+    try:
+        return bool(driver.execute_script("return !!window.__nwCaptureInstalled;"))
+    except Exception:
+        return False
+
+
+def prepare_browser_capture(driver: WebDriver) -> None:
+    _enable_network(driver)
+
+
 def _enable_network(driver: WebDriver) -> None:
-    driver.execute_cdp_cmd("Network.enable", {})
-    driver.execute_cdp_cmd("Network.setCacheDisabled", {"cacheDisabled": True})
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Network.setCacheDisabled", {"cacheDisabled": True})
+    except Exception:
+        pass
+    _install_js_capture(driver)
     try:
         driver.get_log("performance")
     except Exception:
@@ -217,16 +320,52 @@ def collect_json_responses(
     timeout: int,
     label: str,
 ) -> tuple[list[tuple[str, object]], set[str]]:
-    deadline = time.time() + timeout
-    pending: dict[str, str] = {}
-    captured: list[tuple[str, object]] = []
-    while time.time() < deadline:
-        captured.extend(_read_matching_json(driver, url_matches, seen_ids, pending))
-        time.sleep(0.25)
-    captured.extend(_read_matching_json(driver, url_matches, seen_ids, pending))
+    def poll() -> list[tuple[str, object]]:
+        deadline = time.time() + timeout
+        pending: dict[str, str] = {}
+        found: list[tuple[str, object]] = []
+        seen_js: set[str] = set()
+        while time.time() < deadline:
+            found.extend(_read_matching_json(driver, url_matches, seen_ids, pending))
+            found.extend(_read_js_captured(driver, url_matches, seen_js))
+            time.sleep(0.25)
+        found.extend(_read_matching_json(driver, url_matches, seen_ids, pending))
+        found.extend(_read_js_captured(driver, url_matches, seen_js))
+        return found
+
+    captured = poll()
+    if not captured:
+        _install_js_capture(driver)
+        try:
+            driver.refresh()
+            _wait_page_settle(driver)
+        except Exception:
+            pass
+        captured = poll()
     if not captured:
         raise ExtractError(f"Could not capture {label} from the network log.")
     return captured, seen_ids
+
+
+def _read_js_captured(driver: WebDriver, url_matches, seen_js: set[str]) -> list[tuple[str, object]]:
+    captured: list[tuple[str, object]] = []
+    try:
+        items = driver.execute_script("return window.__nwCaptured || [];") or []
+    except Exception:
+        items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "")
+        text = item.get("body") or ""
+        key = f"{url}|{len(text)}|{hash(text)}"
+        if key in seen_js or not url_matches(url):
+            continue
+        seen_js.add(key)
+        body = _parse_json(text)
+        if body is not None:
+            captured.append((url, body))
+    return captured
 
 
 def wait_for_json_response(
@@ -309,25 +448,27 @@ def resources_from_set_payload(payload) -> list[dict]:
     seen: set[str] = set()
     fallback_title = ""
     if isinstance(payload, dict):
-        fallback_title = str(
-            payload.get("title")
-            or payload.get("name")
-            or payload.get("set_name")
-            or payload.get("learning_set_name")
-            or ""
-        ).strip()
+        fallback_title = _human_name(
+            unit_name_from_unit(payload),
+            payload.get("title"),
+            payload.get("name"),
+            payload.get("set_name"),
+            payload.get("learning_set_name"),
+            payload.get("topic_name"),
+        )
 
     def walk(node, inherited_title: str = "") -> None:
         if isinstance(node, dict):
-            title = str(
-                node.get("title")
-                or node.get("name")
-                or node.get("unit_name")
-                or inherited_title
-                or fallback_title
-                or ""
-            ).strip()
-            resource_id = str(node.get("resource_id") or "").strip()
+            details_name = unit_name_from_unit(node) if isinstance(node, dict) else ""
+            title = _human_name(
+                details_name,
+                node.get("title"),
+                node.get("name"),
+                node.get("unit_name"),
+                inherited_title,
+                fallback_title,
+            )
+            resource_id = str(node.get("resource_id") or node.get("resourceId") or "").strip()
             if UUID_RE.fullmatch(resource_id) and resource_id not in seen:
                 seen.add(resource_id)
                 found.append({"resource_id": resource_id, "title": title})
@@ -344,51 +485,208 @@ def resources_from_set_payload(payload) -> list[dict]:
 def _as_topic_dict(node) -> dict | None:
     if not isinstance(node, dict):
         return None
-    if node.get("topic_id"):
-        return node
-    return None
+    if not _topic_id_of(node):
+        return None
+    if _unit_id_of(node):
+        return None
+    return node
+
+
+def topic_display_name(node: dict) -> str:
+    if not isinstance(node, dict):
+        return ""
+    details = _details_dict(node)
+    return _human_name(
+        node.get("topic_name"),
+        node.get("topicName"),
+        node.get("topic_title"),
+        node.get("topicTitle"),
+        node.get("name"),
+        node.get("title"),
+        node.get("display_name"),
+        node.get("displayName"),
+        details.get("topic_name"),
+        details.get("name"),
+    )
+
+
+def _name_for_id(payload, wanted_id: str, id_of, name_of) -> str:
+    wanted = str(wanted_id or "").strip()
+    if not wanted:
+        return ""
+    found = ""
+
+    def walk(node) -> None:
+        nonlocal found
+        if found:
+            return
+        if isinstance(node, dict):
+            if id_of(node) == wanted:
+                name = name_of(node)
+                if name:
+                    found = name
+                    return
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return found
+
+
+def topic_name_from_captured(captured: list[tuple[str, object]], topic_id: str) -> str:
+    for _url, payload in captured:
+        name = _name_for_id(payload, topic_id, _topic_id_of, topic_display_name)
+        if name:
+            return name
+        if isinstance(payload, dict):
+            payload_id = _topic_id_of(payload)
+            if not payload_id or payload_id == topic_id:
+                name = topic_display_name(payload)
+                if name:
+                    return name
+    return ""
+
+
+def _visible_page_text(driver: WebDriver, selectors: tuple[str, ...]) -> str:
+    for selector in selectors:
+        try:
+            for element in driver.find_elements(By.CSS_SELECTOR, selector):
+                try:
+                    if not element.is_displayed():
+                        continue
+                except Exception:
+                    continue
+                text = _human_name(element.text)
+                if text and 1 < len(text) < 180:
+                    return " ".join(text.split())
+        except Exception:
+            continue
+    return ""
+
+
+def topic_name_from_page(driver: WebDriver) -> str:
+    from_dom = _visible_page_text(
+        driver,
+        (
+            "[data-testid='topic-name']",
+            "[data-testid='topicName']",
+            "[class*='topic-name']",
+            "[class*='topicName']",
+            "[class*='TopicName']",
+            "[class*='selected-topic']",
+            "[class*='selectedTopic']",
+            "aside [aria-current='true']",
+            "nav [aria-current='page']",
+            "[class*='breadcrumb'] li:nth-last-child(2)",
+            "h1",
+            "h2",
+        ),
+    )
+    if from_dom:
+        return from_dom
+    try:
+        return _human_name(
+            driver.execute_script(
+                """
+                const nodes = document.querySelectorAll(
+                  '[data-testid="topic-name"], [class*="topic-name"], [class*="TopicName"],' +
+                  ' aside [aria-current="true"], nav [aria-current="page"], [class*="breadcrumb"]'
+                );
+                for (const el of nodes) {
+                  const t = (el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' ');
+                  if (t && t.length > 1 && t.length < 180 && !/^[0-9a-f-]{36}$/i.test(t)) return t;
+                }
+                return '';
+                """
+            )
+        )
+    except Exception:
+        return ""
+
+
+def unit_name_from_page(driver: WebDriver) -> str:
+    from_dom = _visible_page_text(
+        driver,
+        (
+            "[data-testid='unit-name']",
+            "[data-testid='unitName']",
+            "[class*='unit-name']",
+            "[class*='unitName']",
+            "[class*='learning-set']",
+            "[class*='learningSet']",
+            "[class*='resource-title']",
+            "[class*='ResourceTitle']",
+            "[class*='breadcrumb'] li:last-child",
+            "h1",
+            "h2",
+        ),
+    )
+    if from_dom:
+        return from_dom
+    try:
+        return _human_name(
+            driver.execute_script(
+                """
+                const nodes = document.querySelectorAll(
+                  '[data-testid="unit-name"], [class*="unit-name"], [class*="learning-set"],' +
+                  ' [class*="resource-title"], h1, h2'
+                );
+                for (const el of nodes) {
+                  const t = (el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' ');
+                  if (t && t.length > 1 && t.length < 180 && !/^[0-9a-f-]{36}$/i.test(t)) return t;
+                }
+                return '';
+                """
+            )
+        )
+    except Exception:
+        return ""
 
 
 def topics_from_payload(payload) -> list[dict]:
-    if isinstance(payload, list):
-        return [item for item in payload if _as_topic_dict(item)]
-    if not isinstance(payload, dict):
-        return []
-    direct = _as_topic_dict(payload)
-    if direct and "units" in payload:
-        return [direct]
-    if _as_topic_dict(payload.get("topic")):
-        return [payload["topic"]]
-    for key in ("topics", "data", "result", "topic_details"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [item for item in value if _as_topic_dict(item)]
-        nested = _as_topic_dict(value)
-        if nested:
-            return [nested]
-    details = payload.get("course_details")
-    if isinstance(details, dict):
-        if isinstance(details.get("topics"), list):
-            return [item for item in details["topics"] if _as_topic_dict(item)]
-        nested = _as_topic_dict(details)
-        if nested:
-            return [nested]
-    return []
+    found: list[dict] = []
+    seen: set[str] = set()
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            item = _as_topic_dict(node)
+            if item:
+                topic_id = _topic_id_of(item)
+                key = topic_id.lower()
+                if key and key not in seen:
+                    seen.add(key)
+                    if not item.get("topic_id"):
+                        item = dict(item)
+                        item["topic_id"] = topic_id
+                    item["topic_name"] = topic_display_name(item) or str(item.get("topic_name") or topic_id)
+                    found.append(item)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return found
 
 
 def units_details_from_payload(payload) -> list[dict]:
     found: list[dict] = []
 
     def looks_like_unit(node) -> bool:
-        return isinstance(node, dict) and bool(node.get("unit_id"))
+        return isinstance(node, dict) and bool(_unit_id_of(node))
 
     def walk(node) -> None:
         if isinstance(node, dict):
-            details = node.get("units_details")
-            if isinstance(details, list):
-                found.extend(item for item in details if isinstance(item, dict))
+            for key in ("units_details", "unitsDetails"):
+                details = node.get(key)
+                if isinstance(details, list):
+                    found.extend(item for item in details if isinstance(item, dict))
             for key, value in node.items():
-                if key != "units_details":
+                if key not in {"units_details", "unitsDetails"}:
                     walk(value)
         elif isinstance(node, list):
             if node and all(looks_like_unit(item) for item in node):
@@ -401,11 +699,14 @@ def units_details_from_payload(payload) -> list[dict]:
     unique: list[dict] = []
     seen: set[str] = set()
     for unit in found:
-        unit_id = str(unit.get("unit_id") or "").strip()
-        key = unit_id or str(id(unit))
+        unit_id = _unit_id_of(unit)
+        key = unit_id.lower() if unit_id else str(id(unit))
         if key in seen:
             continue
         seen.add(key)
+        if not unit.get("unit_id") and unit_id:
+            unit = dict(unit)
+            unit["unit_id"] = unit_id
         unique.append(unit)
     return unique
 
@@ -413,14 +714,14 @@ def units_details_from_payload(payload) -> list[dict]:
 def units_for_topic(payload, topic_id: str) -> list[dict]:
     topics = topics_from_payload(payload)
     for item in topics:
-        if str(item.get("topic_id") or "") == topic_id:
-            units = item.get("units")
+        if _topic_id_of(item) == topic_id:
+            units = item.get("units") or item.get("units_details") or item.get("unitsDetails")
             if isinstance(units, list):
                 return units
     if isinstance(payload, dict):
         units = payload.get("units")
         if isinstance(units, list) and (
-            not payload.get("topic_id") or str(payload.get("topic_id")) == topic_id
+            not _topic_id_of(payload) or _topic_id_of(payload) == topic_id
         ):
             return units
     populated = [
@@ -459,6 +760,9 @@ def wait_for_topic_list(driver: WebDriver, seen_ids: set[str], timeout: int = CA
             chosen = payload
             topics = found
     if topics:
+        for item in topics:
+            if isinstance(item, dict):
+                item["topic_name"] = topic_display_name(item) or str(item.get("topic_id") or "")
         return chosen, seen_ids, topics
     raise ExtractError("No topics found in course_details v3/v4.")
 
@@ -492,17 +796,22 @@ def wait_for_topic_units(
             v4_payload = payload
             v4_units = units
     if v3_units:
-        return v3_payload, seen_ids, v3_units, "v3", len(v3_units)
+        topic_name = topic_name_from_captured(captured, topic_id)
+        return v3_payload, seen_ids, v3_units, "v3", len(v3_units), topic_name
     if v4_units:
-        return v4_payload, seen_ids, v4_units, "v4", len(v4_units)
+        topic_name = topic_name_from_captured(captured, topic_id)
+        return v4_payload, seen_ids, v4_units, "v4", len(v4_units), topic_name
     raise ExtractError(f"Could not capture units for topic {topic_id}.")
 
 
 def unit_content_type(unit: dict) -> str:
-    details = unit.get("learning_resource_set_unit_details") or {}
-    if not isinstance(details, dict):
-        details = {}
-    for value in (details.get("content_type"), unit.get("content_type")):
+    details = _details_dict(unit)
+    for value in (
+        details.get("content_type"),
+        details.get("contentType"),
+        unit.get("content_type"),
+        unit.get("contentType"),
+    ):
         text = str(value or "").strip().upper()
         if text:
             return text
@@ -510,23 +819,20 @@ def unit_content_type(unit: dict) -> str:
 
 
 def unit_name_from_unit(unit: dict) -> str:
-    details = unit.get("learning_resource_set_unit_details") or {}
-    if not isinstance(details, dict):
-        details = {}
-    for value in (
+    details = _details_dict(unit)
+    return _human_name(
         details.get("name"),
         details.get("title"),
         details.get("unit_name"),
         details.get("display_name"),
+        details.get("displayName"),
         unit.get("name"),
         unit.get("title"),
         unit.get("unit_name"),
+        unit.get("unitName"),
         unit.get("display_name"),
-    ):
-        text = str(value or "").strip()
-        if text and text.upper() not in {"TUTORIAL", "DEFAULT", "LEARNING_SET"}:
-            return text
-    return ""
+        unit.get("displayName"),
+    )
 
 
 def is_tutorial_unit(unit: dict) -> bool:
@@ -548,10 +854,10 @@ def as_unit_record(course_id: str, topic_id: str, topic_name: str, unit: dict) -
     return {
         "course_id": course_id,
         "topic_id": topic_id,
-        "topic_name": topic_name,
-        "unit_id": str(unit.get("unit_id") or "").strip(),
+        "topic_name": _human_name(topic_name, topic_display_name(unit)),
+        "unit_id": _unit_id_of(unit),
         "unit_name": unit_name_from_unit(unit),
-        "unit_order": _num(unit.get("order")),
+        "unit_order": _num(unit.get("order") or unit.get("unit_order")),
         "content_type": unit_content_type(unit) or "TUTORIAL",
     }
 
@@ -588,6 +894,13 @@ def _fresh_open(driver: WebDriver, url: str) -> None:
         pass
     driver.get(url)
     _wait_page_settle(driver)
+    if not _js_capture_ready(driver):
+        _install_js_capture(driver)
+        try:
+            driver.refresh()
+            _wait_page_settle(driver)
+        except Exception:
+            pass
 
 
 def _set_react_value(driver: WebDriver, element, value: str) -> None:
@@ -779,11 +1092,19 @@ def collect_set_resources(
             continue
         for resource in resources:
             resource_id = resource["resource_id"]
-            title = resource.get("title") or unit.get("unit_name") or ""
-            unit_name = unit.get("unit_name") or title
+            title = resource.get("title") or ""
+            set_unit = _name_for_id(set_payload, unit["unit_id"], _unit_id_of, unit_name_from_unit)
+            set_topic = _name_for_id(
+                set_payload, unit.get("topic_id"), _topic_id_of, topic_display_name
+            )
+            page_unit = unit_name_from_page(driver)
+            page_topic = topic_name_from_page(driver)
+            unit_name = _human_name(unit.get("unit_name"), title, set_unit, page_unit)
+            topic_name = _human_name(unit.get("topic_name"), set_topic, page_topic)
             if resource_id in seen_resource_ids:
                 continue
             seen_resource_ids.add(resource_id)
+            log(f"  topic_name: {topic_name or '-'}")
             log(f"  unit_name: {unit_name or '-'}")
             log(f"  title: {title or '-'}")
             log(f"  resource_id: {resource_id}")
@@ -793,7 +1114,7 @@ def collect_set_resources(
                     "title": title,
                     "course_id": unit.get("course_id", ""),
                     "topic_id": unit.get("topic_id", ""),
-                    "topic_name": unit.get("topic_name", ""),
+                    "topic_name": topic_name,
                     "unit_id": unit["unit_id"],
                     "unit_name": unit_name,
                     "unit_order": _num(unit.get("unit_order")),
@@ -818,7 +1139,7 @@ def _match_requested_units(
     for unit in topic_units:
         if not isinstance(unit, dict):
             continue
-        unit_id = str(unit.get("unit_id") or "").strip()
+        unit_id = _unit_id_of(unit)
         if unit_id.lower() not in wanted:
             continue
         matched.append(as_unit_record(course_id, topic_id, topic_name, unit))
@@ -903,20 +1224,21 @@ def _find_units_in_course(
             log("Found all requested unit IDs. Stopping topic scan.")
             break
         topic_uuid = str(topic.get("topic_id") or "").strip()
-        topic_name = str(topic.get("topic_name") or topic_uuid).strip()
+        topic_name = topic_display_name(topic) or str(topic.get("topic_name") or topic_uuid).strip()
         if not UUID_RE.fullmatch(topic_uuid):
             continue
         log(f"Topic {index}/{len(topics)}: {topic_name}")
         log(f"  Waiting {PAGE_SETTLE_SECONDS}s after reload, then reading units from inspect...")
         _fresh_open(driver, f"{COURSE_URL}?c_id={course_id}&t_id={topic_uuid}")
         try:
-            _payload, seen_ids, topic_units, source, total_units = wait_for_topic_units(
+            _payload, seen_ids, topic_units, source, total_units, captured_topic = wait_for_topic_units(
                 driver, seen_ids, topic_uuid
             )
         except ExtractError:
             log("  Could not capture units for this topic.")
             continue
-        log(f"  {total_units} unit(s) from {source}.")
+        topic_name = _human_name(captured_topic, topic_name_from_page(driver), topic_name)
+        log(f"  {total_units} unit(s) from {source}. Topic: {topic_name}")
         matched = _match_requested_units(
             topic_units or [], topic_uuid, topic_name, course_id, wanted
         )
@@ -946,7 +1268,7 @@ def collect_tutorial_units(driver: WebDriver, course_id: str, log: ProgressFn) -
     seen_unit_ids: set[str] = set()
     for index, topic in enumerate(topics, start=1):
         topic_id = str(topic.get("topic_id") or "").strip()
-        topic_name = str(topic.get("topic_name") or topic_id).strip()
+        topic_name = topic_display_name(topic) or str(topic.get("topic_name") or topic_id).strip()
         if not UUID_RE.fullmatch(topic_id):
             log(f"Skipping topic without a valid ID: {topic_name}")
             continue
@@ -955,12 +1277,13 @@ def collect_tutorial_units(driver: WebDriver, course_id: str, log: ProgressFn) -
         log(f"  Waiting {PAGE_SETTLE_SECONDS}s after reload, then reading units from inspect...")
         _fresh_open(driver, topic_url)
         try:
-            _payload, seen_ids, topic_units, source, total_units = wait_for_topic_units(
+            _payload, seen_ids, topic_units, source, total_units, captured_topic = wait_for_topic_units(
                 driver, seen_ids, topic_id
             )
         except ExtractError:
             log("  Could not capture units for this topic.")
             continue
+        topic_name = _human_name(captured_topic, topic_name_from_page(driver), topic_name)
         if not isinstance(topic_units, list):
             topic_units = []
         tutorials = tutorial_units_only(topic_units)
@@ -1016,17 +1339,18 @@ def collect_from_topics(
         log(f"  Waiting {PAGE_SETTLE_SECONDS}s after reload, then reading units from inspect...")
         _fresh_open(driver, f"{COURSE_URL}?c_id={cid}&t_id={topic_id}")
         try:
-            payload, seen_ids, topic_units, source, total_units = wait_for_topic_units(
+            payload, seen_ids, topic_units, source, total_units, captured_topic = wait_for_topic_units(
                 driver, seen_ids, topic_id
             )
         except ExtractError:
             log("  Could not capture units for this topic.")
             continue
-        topic_name = topic_id
-        for item in topics_from_payload(payload):
-            if str(item.get("topic_id") or "") == topic_id:
-                topic_name = str(item.get("topic_name") or topic_id).strip() or topic_id
-                break
+        topic_name = _human_name(
+            captured_topic,
+            topic_name_from_page(driver),
+            topic_name_from_captured([( "", payload)], topic_id),
+        )
+        log(f"  Topic name: {topic_name or topic_id}")
         tutorials = sorted(
             tutorial_units_only(topic_units or []),
             key=lambda unit: _num(unit.get("order")),

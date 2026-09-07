@@ -78,7 +78,7 @@ st.set_page_config(page_title="Learning Resource Extractor", layout="wide")
 st.title("Learning Resource Extractor")
 st.caption(
     "Same four tasks as the Flask app. Streamlit Cloud runs Chromium headless. "
-    "DEFAULT_QUESTIONS steps are skipped. Downloads are grouped by unit name."
+    "DEFAULT_QUESTIONS steps are skipped. Downloads include topic name and unit name."
 )
 
 required_code = _access_code()
@@ -205,14 +205,14 @@ if submitted:
     status_box.success("Done. Files are ready to download.")
     with downloads:
         st.download_button(
-            "Download Excel (content by unit name)",
+            "Download Excel (topic name, unit name, content)",
             data=st.session_state["xlsx_bytes"],
             file_name=st.session_state["xlsx_name"],
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="xlsx-done",
         )
         st.download_button(
-            "Download CSV (unit id, unit name, unit content)",
+            "Download CSV (topic name, unit id, unit name, content)",
             data=st.session_state["csv_bytes"],
             file_name=st.session_state["csv_name"],
             mime="text/csv",
@@ -226,6 +226,7 @@ if submitted:
             else:
                 st.write(
                     f"**{title}**  \n"
+                    f"{item.get('topic_name') or ''}  \n"
                     f"{item.get('unit_name') or ''}  \n"
                     f"`{item.get('resource_id')}` · {item.get('step_count', 0)} step(s)"
                 )

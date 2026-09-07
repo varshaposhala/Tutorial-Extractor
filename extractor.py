@@ -397,7 +397,6 @@ def extract_one_resource(
         "tutorial_id": tutorial_id,
         "content_en": content_en,
         "title": admin_title,
-        "unit_name": admin_title,
         "steps": steps,
         "error": "",
     }
@@ -440,18 +439,36 @@ def _result_sort_key(result: dict):
     )
 
 
+def _clean_name(value) -> str:
+    text = str(value or "").strip()
+    if not text or UUID_RE.fullmatch(text):
+        return ""
+    if text.upper() in {"TUTORIAL", "DEFAULT", "LEARNING_SET", "DEFAULT_QUESTIONS"}:
+        return ""
+    return text
+
+
 def _group_unit_rows(results: list[dict]) -> list[dict]:
     grouped: dict[str, dict] = {}
     order: list[str] = []
     for result in sorted(results, key=_result_sort_key):
         unit_id = str(result.get("unit_id") or "").strip()
-        unit_name = str(result.get("unit_name") or result.get("title") or "").strip()
+        unit_name = _clean_name(result.get("unit_name")) or _clean_name(result.get("title"))
+        topic_name = _clean_name(result.get("topic_name"))
         key = unit_id.lower() if unit_id else f"resource:{result.get('resource_id')}"
         if key not in grouped:
-            grouped[key] = {"unit_id": unit_id, "unit_name": unit_name, "parts": []}
+            grouped[key] = {
+                "topic_name": topic_name,
+                "unit_id": unit_id,
+                "unit_name": unit_name,
+                "parts": [],
+            }
             order.append(key)
-        elif not grouped[key]["unit_name"] and unit_name:
-            grouped[key]["unit_name"] = unit_name
+        else:
+            if not grouped[key]["unit_name"] and unit_name:
+                grouped[key]["unit_name"] = unit_name
+            if not grouped[key]["topic_name"] and topic_name:
+                grouped[key]["topic_name"] = topic_name
         content = _unit_content(result)
         if content:
             grouped[key]["parts"].append(content)
@@ -460,6 +477,7 @@ def _group_unit_rows(results: list[dict]) -> list[dict]:
         item = grouped[key]
         rows.append(
             {
+                "topic_name": item["topic_name"],
                 "unit_id": item["unit_id"],
                 "unit_name": item["unit_name"],
                 "unit_content": "\n\n".join(item["parts"]),
@@ -476,7 +494,7 @@ def write_outputs(results: list[dict], out_dir: Path) -> tuple[Path, Path]:
     resource_rows = []
     step_rows = []
     for result in ordered:
-        unit_name = result.get("unit_name") or result.get("title") or ""
+        unit_name = _clean_name(result.get("unit_name")) or _clean_name(result.get("title"))
         resource_rows.append(
             {
                 "unit_order": _num(result.get("unit_order")),
@@ -515,11 +533,15 @@ def write_outputs(results: list[dict], out_dir: Path) -> tuple[Path, Path]:
                 }
             )
 
+    unit_columns = ["topic_name", "unit_id", "unit_name", "unit_content"]
     units_df = pd.DataFrame(_group_unit_rows(ordered))
     if units_df.empty:
-        units_df = pd.DataFrame(columns=["unit_id", "unit_name", "unit_content"])
+        units_df = pd.DataFrame(columns=unit_columns)
     else:
-        units_df = units_df[["unit_id", "unit_name", "unit_content"]]
+        for column in unit_columns:
+            if column not in units_df.columns:
+                units_df[column] = ""
+        units_df = units_df[unit_columns]
     resources_df = pd.DataFrame(resource_rows)
     steps_df = pd.DataFrame(step_rows)
 
@@ -546,15 +568,28 @@ def _meta_for(resource_id: str, meta: dict) -> dict:
 def _merge_resource_result(result: dict, extra: dict) -> dict:
     merged = dict(result)
     for key, value in extra.items():
-        if key == "error":
+        if key in {"error", "unit_name", "topic_name", "title"}:
             continue
         if value in ("", None) and merged.get(key) not in ("", None, []):
             continue
         merged[key] = value
+    merged["topic_name"] = _clean_name(extra.get("topic_name")) or _clean_name(
+        result.get("topic_name")
+    )
+    merged["unit_name"] = (
+        _clean_name(extra.get("unit_name"))
+        or _clean_name(extra.get("title"))
+        or _clean_name(result.get("unit_name"))
+        or _clean_name(result.get("title"))
+    )
+    merged["title"] = (
+        _clean_name(extra.get("title"))
+        or _clean_name(result.get("title"))
+        or merged.get("unit_name")
+        or ""
+    )
     if not merged.get("unit_name"):
         merged["unit_name"] = merged.get("title") or ""
-    if not merged.get("title"):
-        merged["title"] = merged.get("unit_name") or ""
     return merged
 
 

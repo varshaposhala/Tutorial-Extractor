@@ -10,6 +10,7 @@ from course_collector import (
     collect_from_unit_ids,
     collect_tutorial_units,
     login_learning,
+    prepare_browser_capture,
 )
 from extractor import ExtractError, build_driver, extract_resources
 
@@ -99,6 +100,7 @@ def run_extract(
         try:
             log("Starting browser...")
             driver = build_driver()
+            prepare_browser_capture(driver)
             collected_ids, resource_meta = collect_for_task(
                 driver,
                 task,
