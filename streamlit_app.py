@@ -41,15 +41,15 @@ TASK_HELP = {
     "course": [
         "Paste the course ID, plus phone and OTP.",
         "Log in to learning.ccbp.in.",
-        "Read topics, then copy TUTORIAL units from units_details/v3.",
-        "Open each tutorial set and copy resource_id.",
-        "Log in to admin and extract by unit, in tutorial order.",
+        "Read topics, then copy TUTORIAL and learning-resource units from units_details/v3.",
+        "Open each unit set and copy resource_id.",
+        "Log in to admin and extract by unit. Tutorials include steps; learning resources keep content_en.",
     ],
     "topic": [
         "Paste topic ID(s), or a URL with t_id.",
         "Add course ID unless the URL already has c_id.",
         "Log in to learning.ccbp.in with phone and OTP.",
-        "Copy TUTORIAL units from that topic, then extract in admin.",
+        "Copy TUTORIAL and learning-resource units from that topic, then extract in admin.",
     ],
     "unit": [
         "Paste unit ID(s), or a URL with s_id.",
@@ -78,7 +78,7 @@ st.set_page_config(page_title="Learning Resource Extractor", layout="wide")
 st.title("Learning Resource Extractor")
 st.caption(
     "Same four tasks as the Flask app. Streamlit Cloud runs Chromium headless. "
-    "DEFAULT_QUESTIONS steps are skipped. Downloads include topic name and unit name."
+    "DEFAULT_QUESTIONS steps are skipped. Course, topic, and unit tasks extract TUTORIAL and learning-resource content."
 )
 
 required_code = _access_code()

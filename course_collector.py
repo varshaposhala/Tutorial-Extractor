@@ -1075,6 +1075,21 @@ def unit_content_type(unit: dict) -> str:
     return ""
 
 
+def unit_resource_content_type(unit: dict) -> str:
+    details = _details_dict(unit)
+    for value in (
+        details.get("resource_content_type"),
+        details.get("resourceContentType"),
+        unit.get("resource_content_type"),
+        unit.get("resourceContentType"),
+        unit.get("learning_resource_type"),
+    ):
+        text = str(value or "").strip().upper()
+        if text:
+            return text
+    return ""
+
+
 def unit_name_from_unit(unit: dict) -> str:
     details = _details_dict(unit)
     return _human_name(
@@ -1092,15 +1107,74 @@ def unit_name_from_unit(unit: dict) -> str:
     )
 
 
-EXTRACTABLE_CONTENT_TYPES = {"TUTORIAL", "CHEATSHEET", "CHEAT_SHEET"}
+EXTRACTABLE_CONTENT_TYPES = {
+    "TUTORIAL",
+    "CHEATSHEET",
+    "CHEAT_SHEET",
+    "DEFAULT",
+    "LEARNING_RESOURCE",
+    "LEARNING_SET",
+    "RESOURCE",
+}
+SKIP_CONTENT_TYPES = {
+    "QUIZ",
+    "CLASSROOM_QUIZ",
+    "ASSESSMENT",
+    "VIDEO",
+    "INTERACTIVE_VIDEO",
+    "PRACTICE",
+    "QUESTION",
+    "CODING",
+    "ASSIGNMENT",
+    "PROJECT",
+    "LIVE_SESSION",
+}
+SKIP_RESOURCE_CONTENT_TYPES = {
+    "INTERACTIVE_VIDEO",
+    "VIDEO",
+    "QUIZ",
+    "QUESTION",
+    "CODING_QUESTION",
+    "ASSIGNMENT",
+    "PROJECT",
+}
+SKIP_UNIT_DETAIL_KEYS = (
+    "quiz_unit_details",
+    "question_unit_details",
+    "coding_question_unit_details",
+    "assignment_unit_details",
+    "project_unit_details",
+)
 
 
 def is_tutorial_unit(unit: dict) -> bool:
-    return unit_content_type(unit) in EXTRACTABLE_CONTENT_TYPES
+    return unit_content_type(unit) == "TUTORIAL"
+
+
+def is_extractable_unit(unit: dict) -> bool:
+    if not isinstance(unit, dict):
+        return False
+    for key in SKIP_UNIT_DETAIL_KEYS:
+        value = unit.get(key)
+        if isinstance(value, dict) and value:
+            return False
+    content_type = unit_content_type(unit)
+    resource_type = unit_resource_content_type(unit)
+    if content_type in SKIP_CONTENT_TYPES or resource_type in SKIP_RESOURCE_CONTENT_TYPES:
+        return False
+    if content_type in EXTRACTABLE_CONTENT_TYPES:
+        return True
+    if _details_dict(unit) and resource_type in {"", "DEFAULT", "CHEATSHEET", "MARKDOWN"}:
+        return True
+    return False
 
 
 def tutorial_units_only(units: list[dict]) -> list[dict]:
-    return [unit for unit in units if isinstance(unit, dict) and is_tutorial_unit(unit)]
+    return extractable_units_only(units)
+
+
+def extractable_units_only(units: list[dict]) -> list[dict]:
+    return [unit for unit in units if isinstance(unit, dict) and is_extractable_unit(unit)]
 
 
 def _num(value) -> int:
@@ -1118,7 +1192,8 @@ def as_unit_record(course_id: str, topic_id: str, topic_name: str, unit: dict) -
         "unit_id": _unit_id_of(unit),
         "unit_name": unit_name_from_unit(unit),
         "unit_order": _num(unit.get("order") or unit.get("unit_order")),
-        "content_type": unit_content_type(unit) or "TUTORIAL",
+        "content_type": unit_content_type(unit) or "DEFAULT",
+        "resource_content_type": unit_resource_content_type(unit),
         "resource_id": resource_id_from_node(unit),
     }
 
@@ -1558,28 +1633,35 @@ def collect_tutorial_units(driver: WebDriver, course_id: str, log: ProgressFn) -
         topic_name = _human_name(captured_topic, topic_name_from_page(driver), topic_name)
         if not isinstance(topic_units, list):
             topic_units = []
-        tutorials = tutorial_units_only(topic_units)
+        kept = extractable_units_only(topic_units)
         log(
             f"  {total_units} unit(s) from {source}; "
-            f"copying {len(tutorials)} TUTORIAL unit_id(s)."
+            f"copying {len(kept)} TUTORIAL/learning-resource unit_id(s)."
         )
 
         added = 0
-        for unit in sorted(tutorials, key=lambda item: _num(item.get("order"))):
+        for unit in sorted(kept, key=lambda item: _num(item.get("order"))):
             record = as_unit_record(course_id, topic_id, topic_name, unit)
             if not UUID_RE.fullmatch(record["unit_id"]) or record["unit_id"] in seen_unit_ids:
                 continue
             seen_unit_ids.add(record["unit_id"])
             tutorial_units.append(record)
             added += 1
-            log(f"  TUTORIAL unit: {record['unit_name'] or record['unit_id']} ({record['unit_id']})")
+            kind = "TUTORIAL" if record["content_type"] == "TUTORIAL" else "learning resource"
+            log(
+                f"  {kind}: {record['unit_name'] or record['unit_id']} "
+                f"({record['unit_id']})"
+            )
         if added == 0:
-            log("  No TUTORIAL units in this topic.")
+            log("  No TUTORIAL or learning resource units in this topic.")
 
     if not tutorial_units:
-        raise ExtractError("No TUTORIAL units found in this course.")
+        raise ExtractError("No TUTORIAL or learning resource units found in this course.")
     tutorial_units = sort_units(tutorial_units)
-    log(f"Found {len(tutorial_units)} TUTORIAL unit(s). Opening each set for resource_id...")
+    log(
+        f"Found {len(tutorial_units)} TUTORIAL/learning-resource unit(s). "
+        "Opening each set for resource_id..."
+    )
     return collect_set_resources(driver, tutorial_units, log, seen_ids)
 
 
@@ -1623,28 +1705,35 @@ def collect_from_topics(
             topic_name_from_captured([( "", payload)], topic_id),
         )
         log(f"  Topic name: {topic_name or topic_id}")
-        tutorials = sorted(
-            tutorial_units_only(topic_units or []),
+        kept = sorted(
+            extractable_units_only(topic_units or []),
             key=lambda unit: _num(unit.get("order")),
         )
         log(
             f"  {total_units} unit(s) from {source}; "
-            f"copying {len(tutorials)} TUTORIAL unit_id(s)."
+            f"copying {len(kept)} TUTORIAL/learning-resource unit_id(s)."
         )
         added = 0
-        for unit in tutorials:
+        for unit in kept:
             record = as_unit_record(cid, topic_id, topic_name, unit)
             if not UUID_RE.fullmatch(record["unit_id"]) or record["unit_id"] in seen_unit_ids:
                 continue
             seen_unit_ids.add(record["unit_id"])
             tutorial_units.append(record)
             added += 1
-            log(f"  TUTORIAL unit: {record['unit_name'] or record['unit_id']} ({record['unit_id']})")
+            kind = "TUTORIAL" if record["content_type"] == "TUTORIAL" else "learning resource"
+            log(
+                f"  {kind}: {record['unit_name'] or record['unit_id']} "
+                f"({record['unit_id']})"
+            )
         if added == 0:
-            log("  No TUTORIAL units in this topic.")
+            log("  No TUTORIAL or learning resource units in this topic.")
 
     if not tutorial_units:
-        raise ExtractError("No TUTORIAL units found in the given topic(s).")
+        raise ExtractError("No TUTORIAL or learning resource units found in the given topic(s).")
     tutorial_units = sort_units(tutorial_units)
-    log(f"Found {len(tutorial_units)} TUTORIAL unit(s). Opening each set for resource_id...")
+    log(
+        f"Found {len(tutorial_units)} TUTORIAL/learning-resource unit(s). "
+        "Opening each set for resource_id..."
+    )
     return collect_set_resources(driver, tutorial_units, log, seen_ids)

@@ -130,14 +130,14 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "version": "v8-set"})
+    return jsonify({"ok": True, "version": "v9-resources"})
 
 
 @app.get("/__version")
 def version():
     return jsonify(
         {
-            "version": "v8-set",
+            "version": "v9-resources",
             "template": str(BASE_DIR / "templates" / "index.html"),
         }
     )

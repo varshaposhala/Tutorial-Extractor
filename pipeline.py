@@ -61,10 +61,10 @@ def collect_for_task(
     log("Using phone and OTP from the form.")
     login_learning(driver, phone, otp, log)
     if task == "course":
-        log("Task: course ID. Collecting TUTORIAL units from every topic.")
+        log("Task: course ID. Collecting TUTORIAL and learning-resource units from every topic.")
         tutorials = collect_tutorial_units(driver, course_id, log)
     elif task == "topic":
-        log("Task: topic ID. Collecting TUTORIAL units from the given topic(s).")
+        log("Task: topic ID. Collecting TUTORIAL and learning-resource units from the given topic(s).")
         tutorials = collect_from_topics(driver, topic_refs, course_id, log)
     else:
         log("Task: unit ID. Opening only the requested unit set pages.")

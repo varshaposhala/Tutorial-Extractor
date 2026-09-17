@@ -28,15 +28,15 @@ const TASKS = {
   course: {
     title: "Course ID",
     button: "Extract from course",
-    hint: "Walks every topic. Only TUTORIAL units from units_details/v3 are kept. Files are grouped by unit name, steps in tutorial order.",
+    hint: "Walks every topic. Keeps TUTORIAL units and learning-resource units from units_details/v3. Files are grouped by unit name.",
     show: ["fields-course", "fields-portal", "fields-admin"],
     steps: [
       "Paste the course ID, plus phone and OTP.",
       "Log in to learning.ccbp.in.",
       "Read topics, then wait for reload and copy units from inspect.",
-      "Keep only TUTORIAL unit IDs from v3 (v4 if v3 is missing).",
-      "Open each tutorial set, copy resource_id from the set request.",
-      "Log in to admin and extract those resources by unit, in tutorial order.",
+      "Keep TUTORIAL and learning-resource unit IDs from v3 (v4 if v3 is missing).",
+      "Open each unit set, copy resource_id from the set request.",
+      "Log in to admin and extract those resources by unit. Tutorials include steps; learning resources keep content_en.",
     ],
   },
   topic: {
@@ -48,9 +48,9 @@ const TASKS = {
       "Paste topic ID(s), or a course URL with t_id.",
       "Add the course ID if the URL does not include c_id.",
       "Log in to learning.ccbp.in with phone and OTP.",
-      "Wait for reload, then copy TUTORIAL units from units_details/v3.",
-      "Open each tutorial set, copy resource_id from inspect.",
-      "Log in to admin and extract those resources by unit, in tutorial order.",
+      "Wait for reload, then copy TUTORIAL and learning-resource units from units_details/v3.",
+      "Open each unit set, copy resource_id from inspect.",
+      "Log in to admin and extract those resources by unit. Tutorials include steps; learning resources keep content_en.",
     ],
   },
   unit: {

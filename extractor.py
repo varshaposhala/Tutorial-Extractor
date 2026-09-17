@@ -386,12 +386,24 @@ def extract_one_resource(
     driver: webdriver.Remote, resource_id: str, log: ProgressFn
 ) -> dict:
     content_en, admin_title = fetch_resource_content(driver, resource_id, log)
-    tutorial_id = fetch_tutorial_id(driver, resource_id, log)
-    summaries = collect_step_rows(driver, tutorial_id, log)
+    tutorial_id = ""
     steps: list[dict] = []
-    for index, summary in enumerate(summaries, start=1):
-        log(f"Step {index}/{len(summaries)}")
-        steps.append(fetch_step_content(driver, summary, tutorial_id, log))
+    try:
+        tutorial_id = fetch_tutorial_id(driver, resource_id, log)
+    except ExtractError as exc:
+        log(f"No tutorial linked. Keeping learning resource content. {exc}")
+    if tutorial_id:
+        try:
+            summaries = collect_step_rows(driver, tutorial_id, log)
+            for index, summary in enumerate(summaries, start=1):
+                log(f"Step {index}/{len(summaries)}")
+                steps.append(fetch_step_content(driver, summary, tutorial_id, log))
+        except ExtractError as exc:
+            log(f"No tutorial steps. Keeping learning resource content. {exc}")
+    if not content_en and not steps:
+        raise ExtractError(
+            f"No content_en or tutorial steps found for resource ID {resource_id}"
+        )
     return {
         "resource_id": resource_id,
         "tutorial_id": tutorial_id,

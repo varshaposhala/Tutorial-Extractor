@@ -11,17 +11,17 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v=8" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}?v=9" />
   </head>
   <body>
     <div class="page">
       <header class="hero">
-        <p class="kicker">NKB admin helper · form v8 (set + cheatsheet)</p>
+        <p class="kicker">NKB admin helper · form v9 (tutorial + learning resource)</p>
         <h1>Learning Resource Extractor</h1>
         <p class="lede">
-          Pick one task. Each path uses different inputs and steps, then writes
-          Excel and CSV with topic name and unit name, content grouped by unit,
-          with tutorial steps in order.
+          Pick one task. Course, topic, and unit runs copy both TUTORIAL units
+          and learning-resource units, then write Excel and CSV with topic name
+          and unit name. Tutorial steps stay in order.
           <code>DEFAULT_QUESTIONS</code> steps are skipped.
         </p>
       </header>
@@ -35,12 +35,12 @@
         <button type="button" class="task-card" data-task="course" role="tab" aria-selected="false">
           <span class="task-num">Task 2</span>
           <strong>Course ID</strong>
-          <span>Walk every topic, keep TUTORIAL units, then extract.</span>
+          <span>Walk every topic, keep TUTORIAL and learning-resource units, then extract.</span>
         </button>
         <button type="button" class="task-card" data-task="topic" role="tab" aria-selected="false">
           <span class="task-num">Task 3</span>
           <strong>Topic ID</strong>
-          <span>Open one topic, keep TUTORIAL units, then extract.</span>
+          <span>Open one topic, keep TUTORIAL and learning-resource units, then extract.</span>
         </button>
         <button type="button" class="task-card" data-task="unit" role="tab" aria-selected="false">
           <span class="task-num">Task 4</span>
