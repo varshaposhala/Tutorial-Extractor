@@ -930,14 +930,18 @@ def topics_from_payload(payload) -> list[dict]:
     return found
 
 
-def units_details_from_payload(payload) -> list[dict]:
+def units_details_from_payload(payload, topic_id: str = "") -> list[dict]:
     found: list[dict] = []
+    wanted = str(topic_id or "").strip()
 
     def looks_like_unit(node) -> bool:
         return isinstance(node, dict) and bool(_unit_id_of(node))
 
     def walk(node) -> None:
         if isinstance(node, dict):
+            node_tid = _topic_id_of(node)
+            if wanted and node_tid and node_tid != wanted:
+                return
             for key in ("units_details", "unitsDetails"):
                 details = node.get(key)
                 if isinstance(details, list):
@@ -956,6 +960,10 @@ def units_details_from_payload(payload) -> list[dict]:
     unique: list[dict] = []
     seen: set[str] = set()
     for unit in found:
+        if wanted:
+            unit_tid = _topic_id_of(unit)
+            if unit_tid and unit_tid != wanted:
+                continue
         unit_id = _unit_id_of(unit)
         key = unit_id.lower() if unit_id else str(id(unit))
         if key in seen:
@@ -991,13 +999,35 @@ def units_for_topic(payload, topic_id: str) -> list[dict]:
     return []
 
 
+def units_for_requested_topic(units: list[dict], topic_id: str) -> list[dict]:
+    wanted = str(topic_id or "").strip()
+    if not wanted:
+        return [unit for unit in units if isinstance(unit, dict)]
+    matched: list[dict] = []
+    saw_topic_id = False
+    for unit in units:
+        if not isinstance(unit, dict):
+            continue
+        unit_tid = _topic_id_of(unit)
+        if unit_tid:
+            saw_topic_id = True
+            if unit_tid == wanted:
+                matched.append(unit)
+        else:
+            matched.append(unit)
+    if saw_topic_id:
+        return [unit for unit in units if isinstance(unit, dict) and _topic_id_of(unit) == wanted]
+    return matched
+
+
 def extract_units(payload, topic_id: str) -> tuple[list[dict], str]:
-    v3_units = units_details_from_payload(payload)
+    scoped = units_for_topic(payload, topic_id)
+    if scoped:
+        source = "v3" if units_details_from_payload(payload, topic_id) else "v4"
+        return units_for_requested_topic(scoped, topic_id), source
+    v3_units = units_for_requested_topic(units_details_from_payload(payload, topic_id), topic_id)
     if v3_units:
         return v3_units, "v3"
-    v4_units = units_for_topic(payload, topic_id)
-    if v4_units:
-        return v4_units, "v4"
     return [], ""
 
 
@@ -1040,16 +1070,22 @@ def wait_for_topic_units(
     v4_units: list[dict] = []
     for url, payload in captured:
         if is_units_details_v3_url(url):
-            units = units_details_from_payload(payload)
+            payload_tid = _topic_id_of(payload) if isinstance(payload, dict) else ""
+            if payload_tid and payload_tid != topic_id:
+                continue
+            units = units_for_requested_topic(
+                units_details_from_payload(payload, topic_id), topic_id
+            )
             if units:
                 v3_payload = payload
                 v3_units = units
             continue
-        units, source = extract_units(payload, topic_id)
-        if source == "v3" and units:
-            v3_payload = payload
-            v3_units = units
-        elif source == "v4" and units:
+        units = units_for_requested_topic(units_for_topic(payload, topic_id), topic_id)
+        if not units:
+            units = units_for_requested_topic(
+                units_details_from_payload(payload, topic_id), topic_id
+            )
+        if units:
             v4_payload = payload
             v4_units = units
     if v3_units:
@@ -1633,7 +1669,9 @@ def collect_tutorial_units(driver: WebDriver, course_id: str, log: ProgressFn) -
         topic_name = _human_name(captured_topic, topic_name_from_page(driver), topic_name)
         if not isinstance(topic_units, list):
             topic_units = []
-        kept = extractable_units_only(topic_units)
+        kept = extractable_units_only(
+            units_for_requested_topic(topic_units, topic_id)
+        )
         log(
             f"  {total_units} unit(s) from {source}; "
             f"copying {len(kept)} TUTORIAL/learning-resource unit_id(s)."
@@ -1706,7 +1744,9 @@ def collect_from_topics(
         )
         log(f"  Topic name: {topic_name or topic_id}")
         kept = sorted(
-            extractable_units_only(topic_units or []),
+            units_for_requested_topic(
+                extractable_units_only(topic_units or []), topic_id
+            ),
             key=lambda unit: _num(unit.get("order")),
         )
         log(
