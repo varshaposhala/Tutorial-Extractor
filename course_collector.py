@@ -1116,6 +1116,10 @@ def wait_for_topic_units(
     raise ExtractError(f"Could not capture units for topic {topic_id}.")
 
 
+def unit_type_of(unit: dict) -> str:
+    return str((unit or {}).get("unit_type") or (unit or {}).get("unitType") or "").strip().upper()
+
+
 def unit_content_type(unit: dict) -> str:
     details = _details_dict(unit)
     for value in (
@@ -1170,7 +1174,24 @@ EXTRACTABLE_CONTENT_TYPES = {
     "LEARNING_RESOURCE",
     "LEARNING_SET",
     "RESOURCE",
+    "SQL",
+    "PYTHON",
+    "HTML",
+    "CSS",
+    "JS",
+    "JAVASCRIPT",
+    "JAVA",
+    "CPP",
+    "C",
+    "MARKDOWN",
 }
+EXTRACTABLE_UNIT_TYPES = {
+    "LEARNING_SET",
+    "LEARNING_RESOURCE_SET",
+    "RESOURCE_SET",
+    "LEARNING_RESOURCE",
+}
+KEEP_RESOURCE_CONTENT_TYPES = {"", "DEFAULT", "CHEATSHEET", "CHEAT_SHEET", "MARKDOWN"}
 SKIP_CONTENT_TYPES = {
     "QUIZ",
     "CLASSROOM_QUIZ",
@@ -1183,6 +1204,7 @@ SKIP_CONTENT_TYPES = {
     "ASSIGNMENT",
     "PROJECT",
     "LIVE_SESSION",
+    "EXAM",
 }
 SKIP_RESOURCE_CONTENT_TYPES = {
     "INTERACTIVE_VIDEO",
@@ -1194,11 +1216,15 @@ SKIP_RESOURCE_CONTENT_TYPES = {
     "PROJECT",
 }
 SKIP_UNIT_DETAIL_KEYS = (
+    "exam_unit_details",
+    "assessment_unit_details",
+    "practice_unit_details",
     "quiz_unit_details",
-    "question_unit_details",
-    "coding_question_unit_details",
-    "assignment_unit_details",
     "project_unit_details",
+    "question_set_unit_details",
+    "assignment_unit_details",
+    "adaptive_video_question_set_details",
+    "coding_contest_unit_details",
 )
 
 
@@ -1215,11 +1241,17 @@ def is_extractable_unit(unit: dict) -> bool:
             return False
     content_type = unit_content_type(unit)
     resource_type = unit_resource_content_type(unit)
+    unit_type = unit_type_of(unit)
     if content_type in SKIP_CONTENT_TYPES or resource_type in SKIP_RESOURCE_CONTENT_TYPES:
         return False
-    if content_type in EXTRACTABLE_CONTENT_TYPES:
+    if unit_type in SKIP_CONTENT_TYPES:
+        return False
+    if (
+        (unit_type in EXTRACTABLE_UNIT_TYPES or _details_dict(unit))
+        and resource_type in KEEP_RESOURCE_CONTENT_TYPES
+    ):
         return True
-    if _details_dict(unit) and resource_type in {"", "DEFAULT", "CHEATSHEET", "MARKDOWN"}:
+    if content_type in EXTRACTABLE_CONTENT_TYPES or unit_type in EXTRACTABLE_UNIT_TYPES:
         return True
     return False
 
@@ -1247,7 +1279,8 @@ def as_unit_record(course_id: str, topic_id: str, topic_name: str, unit: dict) -
         "unit_id": _unit_id_of(unit),
         "unit_name": unit_name_from_unit(unit),
         "unit_order": _num(unit.get("order") or unit.get("unit_order")),
-        "content_type": unit_content_type(unit) or "DEFAULT",
+        "content_type": unit_content_type(unit) or unit_type_of(unit) or "DEFAULT",
+        "unit_type": unit_type_of(unit),
         "resource_content_type": unit_resource_content_type(unit),
         "resource_id": resource_id_from_node(unit),
     }
@@ -1710,7 +1743,12 @@ def collect_tutorial_units(driver: WebDriver, course_id: str, log: ProgressFn) -
             seen_unit_ids.add(record["unit_id"])
             tutorial_units.append(record)
             added += 1
-            kind = "TUTORIAL" if record["content_type"] == "TUTORIAL" else "learning resource"
+            if record["content_type"] == "TUTORIAL":
+                kind = "TUTORIAL"
+            elif record.get("unit_type") == "LEARNING_SET":
+                kind = "LEARNING_SET"
+            else:
+                kind = "learning resource"
             log(
                 f"  {kind}: {record['unit_name'] or record['unit_id']} "
                 f"({record['unit_id']})"
@@ -1790,7 +1828,12 @@ def collect_from_topics(
             seen_unit_ids.add(record["unit_id"])
             tutorial_units.append(record)
             added += 1
-            kind = "TUTORIAL" if record["content_type"] == "TUTORIAL" else "learning resource"
+            if record["content_type"] == "TUTORIAL":
+                kind = "TUTORIAL"
+            elif record.get("unit_type") == "LEARNING_SET":
+                kind = "LEARNING_SET"
+            else:
+                kind = "learning resource"
             log(
                 f"  {kind}: {record['unit_name'] or record['unit_id']} "
                 f"({record['unit_id']})"
