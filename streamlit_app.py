@@ -104,7 +104,12 @@ with st.form("extract"):
     if task == "resource":
         resource_ids_raw = st.text_area("Learning resource ID(s)", height=120)
     if task == "topic":
-        topic_ids_raw = st.text_area("Topic ID(s) or URL with t_id", height=100)
+        topic_ids_raw = st.text_area(
+            "Topic ID(s) or URL with t_id",
+            height=100,
+            placeholder="One topic UUID per line",
+            key="topic_ids_input",
+        )
     if task == "unit":
         unit_ids_raw = st.text_area("Unit ID(s) or URL with s_id", height=120)
         topic_id_raw = st.text_input("Topic ID (optional)")

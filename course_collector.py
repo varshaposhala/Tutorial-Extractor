@@ -68,7 +68,7 @@ def _query_uuid(text: str, key: str) -> str:
 
 
 def parse_topic_id(raw: str) -> str:
-    text = (raw or "").strip()
+    text = (raw or "").strip().strip("'\"")
     if not text:
         return ""
     topic_id = _query_uuid(text, "t_id")
@@ -79,24 +79,37 @@ def parse_topic_id(raw: str) -> str:
     raise ExtractError("Enter a valid topic ID (UUID) or a URL with t_id.")
 
 
-def parse_topic_refs(raw: str) -> list[dict]:
-    text = (raw or "").strip()
-    if not text:
+def parse_topic_refs(raw) -> list[dict]:
+    if isinstance(raw, (list, tuple)):
+        text = "\n".join(str(item) for item in raw)
+    else:
+        text = str(raw or "")
+    if not text.strip():
         raise ExtractError("Enter at least one topic ID or a course URL with t_id.")
     refs: list[dict] = []
     seen: set[str] = set()
-    for part in re.split(r"[\s,;]+", text):
-        part = part.strip()
-        if not part:
-            continue
-        topic_id = _query_uuid(part, "t_id") or (part if UUID_RE.fullmatch(part) else "")
-        if not topic_id:
-            continue
+
+    def add(topic_id: str, course_id: str = "") -> None:
+        topic_id = str(topic_id or "").strip()
+        if not UUID_RE.fullmatch(topic_id):
+            return
         key = topic_id.lower()
         if key in seen:
-            continue
+            return
         seen.add(key)
-        refs.append({"topic_id": topic_id, "course_id": _query_uuid(part, "c_id")})
+        refs.append({"topic_id": topic_id, "course_id": str(course_id or "").strip()})
+
+    for match in re.finditer(r"t_id=([0-9a-fA-F-]{36})", text, re.I):
+        window = text[max(0, match.start() - 240) : match.end() + 80]
+        add(match.group(1), _query_uuid(window, "c_id"))
+
+    for match in UUID_RE.finditer(text):
+        uuid = match.group(0)
+        prefix = text[max(0, match.start() - 6) : match.start()].lower()
+        if prefix.endswith("c_id=") or prefix.endswith("s_id=") or prefix.endswith("t_id="):
+            continue
+        add(uuid)
+
     if not refs:
         raise ExtractError("Enter at least one topic ID (UUID) or a URL with t_id.")
     return refs
@@ -428,6 +441,7 @@ def collect_json_responses(
     label: str,
     refresh_if_empty: bool = True,
     require: bool = True,
+    return_early: bool = True,
 ) -> tuple[list[tuple[str, object]], set[str]]:
     def poll(seconds: int) -> list[tuple[str, object]]:
         deadline = time.time() + max(seconds, 0.3)
@@ -437,7 +451,9 @@ def collect_json_responses(
         while True:
             found.extend(_read_matching_json(driver, url_matches, seen_ids, pending))
             found.extend(_read_js_captured(driver, url_matches, seen_js))
-            if found or time.time() >= deadline:
+            if found and return_early:
+                break
+            if time.time() >= deadline:
                 break
             time.sleep(0.25)
         return found
@@ -1063,6 +1079,9 @@ def wait_for_topic_units(
         seen_ids,
         timeout,
         "units_details/v3 or course_details/v4",
+        refresh_if_empty=True,
+        require=True,
+        return_early=False,
     )
     v3_payload = None
     v3_units: list[dict] = []
@@ -1257,6 +1276,12 @@ def _wait_page_settle(driver: WebDriver, seconds: float = PAGE_SETTLE_SECONDS) -
 
 
 def _fresh_open(driver: WebDriver, url: str) -> None:
+    try:
+        driver.execute_script(
+            "window.__nwCaptured = []; window.__nwResourceHits = [];"
+        )
+    except Exception:
+        pass
     driver.get("about:blank")
     time.sleep(0.3)
     _enable_network(driver)
@@ -1717,6 +1742,10 @@ def collect_from_topics(
     tutorial_units: list[dict] = []
     seen_unit_ids: set[str] = set()
 
+    log(
+        f"Opening {len(topic_refs)} topic(s): "
+        + ", ".join(str(ref.get("topic_id") or "") for ref in topic_refs)
+    )
     for index, ref in enumerate(topic_refs, start=1):
         topic_id = parse_topic_id(str(ref.get("topic_id") or ""))
         ref_course = str(ref.get("course_id") or "").strip()
