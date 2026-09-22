@@ -143,31 +143,133 @@ def _wait_admin_settle() -> None:
     time.sleep(ADMIN_SETTLE_SECONDS)
 
 
-def login(driver: webdriver.Remote, username: str, password: str, log: ProgressFn) -> None:
-    log("Opening admin login...")
-    driver.get(LOGIN_URL)
-    wait_for(driver, By.ID, "id_username")
-    driver.find_element(By.ID, "id_username").clear()
-    driver.find_element(By.ID, "id_username").send_keys(username)
-    driver.find_element(By.ID, "id_password").clear()
-    driver.find_element(By.ID, "id_password").send_keys(password)
-    driver.find_element(By.CSS_SELECTOR, "input[type='submit'][value='Log in']").click()
+def _login_error_text(driver: webdriver.Remote) -> str:
+    texts: list[str] = []
+    for selector in ("p.errornote", ".errornote", ".errorlist", "ul.errorlist li"):
+        for element in driver.find_elements(By.CSS_SELECTOR, selector):
+            try:
+                text = " ".join((element.text or "").split())
+            except Exception:
+                continue
+            if text and text not in texts:
+                texts.append(text)
+    return " ".join(texts)
 
+
+def _on_admin_login_page(driver: webdriver.Remote) -> bool:
+    url = (driver.current_url or "").lower()
+    if "/login/" in url:
+        return True
     try:
-        WebDriverWait(driver, WAIT_SECONDS).until(
-            EC.any_of(
-                EC.presence_of_element_located((By.ID, "content-main")),
-                EC.presence_of_element_located((By.CSS_SELECTOR, "p.errornote")),
-            )
-        )
-    except TimeoutException as exc:
-        raise ExtractError("Login page did not finish loading.") from exc
+        return bool(driver.find_elements(By.ID, "id_username"))
+    except Exception:
+        return False
 
-    if driver.find_elements(By.CSS_SELECTOR, "p.errornote") or driver.find_elements(
-        By.ID, "id_password"
+
+def _admin_login_ok(driver: webdriver.Remote) -> bool:
+    if _on_admin_login_page(driver):
+        return False
+    url = (driver.current_url or "").lower()
+    if "/admin/" not in url:
+        return False
+    for locator in (
+        (By.ID, "user-tools"),
+        (By.ID, "site-name"),
+        (By.CSS_SELECTOR, "#content-main .module"),
+        (By.CSS_SELECTOR, "#result_list"),
+        (By.CSS_SELECTOR, "a[href*='/admin/logout/']"),
     ):
-        raise ExtractError("Login failed. Check username and password.")
-    log("Logged in.")
+        try:
+            if driver.find_elements(*locator):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _fill_admin_login(driver: webdriver.Remote, username: str, password: str) -> None:
+    wait_for(driver, By.ID, "id_username")
+    wait_for(driver, By.ID, "id_password")
+    driver.execute_script(
+        """
+        const username = arguments[0];
+        const password = arguments[1];
+        const userEl = document.getElementById('id_username');
+        const passEl = document.getElementById('id_password');
+        const setValue = (el, value) => {
+          const proto = el.tagName === 'TEXTAREA'
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+          el.focus();
+          if (setter) setter.call(el, value);
+          else el.value = value;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        setValue(userEl, username);
+        setValue(passEl, password);
+        """,
+        username,
+        password,
+    )
+    user_el = driver.find_element(By.ID, "id_username")
+    pass_el = driver.find_element(By.ID, "id_password")
+    if (user_el.get_attribute("value") or "") != username:
+        user_el.clear()
+        user_el.send_keys(username)
+    if (pass_el.get_attribute("value") or "") != password:
+        pass_el.clear()
+        pass_el.send_keys(password)
+
+
+def _submit_admin_login(driver: webdriver.Remote) -> None:
+    for locator in (
+        (By.CSS_SELECTOR, "#login-form input[type='submit']"),
+        (By.CSS_SELECTOR, "input[type='submit'][value='Log in']"),
+        (By.CSS_SELECTOR, "form#login-form button[type='submit']"),
+        (By.CSS_SELECTOR, "input[type='submit']"),
+    ):
+        matches = [el for el in driver.find_elements(*locator) if el.is_displayed()]
+        if matches:
+            matches[0].click()
+            return
+    form = driver.find_element(By.ID, "login-form")
+    form.submit()
+
+
+def login(driver: webdriver.Remote, username: str, password: str, log: ProgressFn) -> None:
+    username = (username or "").strip()
+    password = (password or "").strip()
+    if not username or not password:
+        raise ExtractError("Username and password are required.")
+    log("Opening admin login...")
+    last_error = ""
+    for attempt in range(1, 3):
+        driver.get(f"{LOGIN_URL}login/?next=/admin/")
+        _fill_admin_login(driver, username, password)
+        _submit_admin_login(driver)
+        try:
+            WebDriverWait(driver, WAIT_SECONDS).until(
+                lambda d: _admin_login_ok(d) or bool(_login_error_text(d))
+            )
+        except TimeoutException:
+            if attempt == 1:
+                log("Admin login did not complete. Retrying...")
+                continue
+            url = driver.current_url or ""
+            raise ExtractError(f"Admin login page did not finish loading ({url}).")
+        if _admin_login_ok(driver):
+            log("Logged in to admin.")
+            return
+        last_error = _login_error_text(driver)
+        if attempt == 1 and (not last_error or "csrf" in last_error.lower()):
+            log("Admin login did not stick. Retrying...")
+            continue
+        break
+    if last_error:
+        raise ExtractError(f"Admin login failed: {last_error}")
+    raise ExtractError("Admin login failed. Check the admin username and password.")
 
 
 def textarea_value(driver: webdriver.Remote, element_id: str) -> str:

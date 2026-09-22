@@ -166,22 +166,40 @@ JS_CAPTURE_HOOK = """
     }
     return out;
   };
+  const ridOf = (node) => node && (
+    node.resource_id || node.resourceId || node.learning_resource_id ||
+    node.learningResourceId || node.cheat_sheet_id || node.cheatsheet_id ||
+    node.cheatSheetId || node.default_resource_id || node.defaultResourceId
+  );
   const addHit = (url, node) => {
-    const rid = node && (node.resource_id || node.resourceId || node.learning_resource_id);
+    const rid = ridOf(node);
     if (!rid || seenHits[rid]) return;
     seenHits[rid] = true;
     window.__nwResourceHits.push({
       resource_id: String(rid),
-      title: String((node && (node.title || node.name)) || ''),
-      url: String(url || '')
+      title: String((node && (node.title || node.name || (node.learning_resource_set_unit_details && node.learning_resource_set_unit_details.name))) || ''),
+      url: String(url || ''),
+      unit_id: String((node && (node.unit_id || node.unitId || node.current_unit_id || node.currentUnitId)) || '')
     });
   };
   const collectHits = (url, node) => {
     if (!node) return;
-    if (Array.isArray(node)) { node.forEach((item) => collectHits(url, item)); return; }
+    if (Array.isArray(node)) {
+      node.forEach((item) => {
+        if (typeof item === 'string' && /^[0-9a-fA-F-]{36}$/.test(item) && !seenHits[item]) {
+          seenHits[item] = true;
+          window.__nwResourceHits.push({ resource_id: item, title: '', url: String(url || ''), unit_id: '' });
+        } else collectHits(url, item);
+      });
+      return;
+    }
     if (typeof node !== 'object') return;
     addHit(url, node);
-    const nested = node.learning_resources_set || node.learning_resource_set || node.learningResourcesSet;
+    for (const key of ['learning_resource_ids', 'learningResourceIds', 'resource_ids', 'resourceIds']) {
+      const items = node[key];
+      if (Array.isArray(items)) collectHits(url, items);
+    }
+    const nested = node.learning_resources_set || node.learning_resource_set || node.learningResourcesSet || node.learning_resources;
     if (Array.isArray(nested)) nested.forEach((item) => collectHits(url, item));
     Object.values(node).forEach((value) => {
       if (value && typeof value === 'object') collectHits(url, value);
@@ -229,19 +247,36 @@ JS_CAPTURE_HOOK = """
 JS_RESOURCE_HITS = """
 const hits = [];
 const seen = {};
+const ridOf = (node) => node && (
+  node.resource_id || node.resourceId || node.learning_resource_id ||
+  node.learningResourceId || node.cheat_sheet_id || node.cheatsheet_id ||
+  node.cheatSheetId || node.default_resource_id || node.defaultResourceId
+);
 const take = (node, url) => {
   if (!node) return;
-  if (Array.isArray(node)) { node.forEach((item) => take(item, url)); return; }
+  if (Array.isArray(node)) {
+    node.forEach((item) => {
+      if (typeof item === 'string' && /^[0-9a-fA-F-]{36}$/.test(item) && !seen[item]) {
+        seen[item] = true;
+        hits.push({ resource_id: item, title: '', url: url || '', unit_id: '' });
+      } else take(item, url);
+    });
+    return;
+  }
   if (typeof node !== 'object') return;
-  const nested = node.learning_resources_set || node.learning_resource_set || node.learningResourcesSet;
+  const nested = node.learning_resources_set || node.learning_resource_set || node.learningResourcesSet || node.learning_resources;
   if (Array.isArray(nested)) nested.forEach((item) => take(item, url));
-  const rid = node.resource_id || node.resourceId || node.learning_resource_id;
+  for (const key of ['learning_resource_ids', 'learningResourceIds', 'resource_ids', 'resourceIds']) {
+    if (Array.isArray(node[key])) take(node[key], url);
+  }
+  const rid = ridOf(node);
   if (rid && !seen[rid]) {
     seen[rid] = true;
     hits.push({
       resource_id: String(rid),
-      title: String(node.title || node.name || ''),
-      url: url || ''
+      title: String(node.title || node.name || (node.learning_resource_set_unit_details && node.learning_resource_set_unit_details.name) || ''),
+      url: url || '',
+      unit_id: String(node.unit_id || node.unitId || node.current_unit_id || node.currentUnitId || '')
     });
   }
   Object.values(node).forEach((value) => {
@@ -257,6 +292,114 @@ for (const item of (window.__nwResourceHits || [])) {
 }
 for (const item of (window.__nwCaptured || [])) {
   try { take(JSON.parse(item.body || ''), item.url); } catch (e) {}
+}
+return hits;
+"""
+
+JS_PROBE_SET = """
+const unitId = arguments[0] || '';
+const topicId = arguments[1] || '';
+const courseId = arguments[2] || '';
+const extraIds = arguments[3] || [];
+const done = arguments[arguments.length - 1];
+const origin = 'https://nkb-backend-ccbp-prod-apis.ccbp.in';
+const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+const paths = [
+  '/api/nkb_resources/user/learning_resources_set/v1/',
+  '/api/nkb_resources/user/learning_resource_set/details/v1/',
+  '/api/nkb_resources/user/learning_set/details/v1/',
+  '/api/nkb_resources/user/unit/details/v1/',
+  '/api/nkb_resources/user/topic/unit/details/v1/',
+];
+(async () => {
+  const qs = new URLSearchParams();
+  if (unitId) qs.set('unit_id', unitId);
+  if (topicId) qs.set('topic_id', topicId);
+  if (courseId) qs.set('course_id', courseId);
+  const query = qs.toString();
+  const urls = [];
+  for (const path of paths) {
+    urls.push(origin + path + (query ? '?' + query : ''));
+  }
+  for (const extra of extraIds) {
+    if (!extra) continue;
+    urls.push(origin + '/api/nkb_resources/user/learning_resources_set/v1/' + extra + '/');
+    urls.push(origin + '/api/nkb_resources/user/learning_resources_set/v1/?unit_id=' + extra);
+    urls.push(origin + '/api/nkb_resources/user/learning_resources_set/v1/?set_id=' + extra);
+  }
+  for (const url of urls) {
+    try { await fetch(url, { credentials: 'include', headers: { Accept: 'application/json' } }); } catch (e) {}
+  }
+  const bodies = [
+    { unit_id: unitId, topic_id: topicId, course_id: courseId },
+    { unit_id: unitId, topic_id: topicId },
+    { unit_id: unitId },
+  ];
+  for (const path of paths) {
+    for (const body of bodies) {
+      try {
+        await fetch(origin + path, {
+          method: 'POST',
+          credentials: 'include',
+          headers,
+          body: JSON.stringify(body),
+        });
+      } catch (e) {}
+    }
+  }
+  done(true);
+})();
+"""
+
+JS_PAGE_RESOURCE_IDS = """
+const unitId = String(arguments[0] || '').toLowerCase();
+const hits = [];
+const seen = {};
+const ridKeys = [
+  'resource_id', 'resourceId', 'learning_resource_id', 'learningResourceId',
+  'cheat_sheet_id', 'cheatsheet_id', 'cheatSheetId', 'default_resource_id', 'defaultResourceId'
+];
+const unitKeys = ['unit_id', 'unitId', 'current_unit_id', 'currentUnitId', 's_id'];
+const add = (rid, title, uid) => {
+  const id = String(rid || '');
+  if (!id || seen[id] || !/^[0-9a-fA-F-]{36}$/.test(id)) return;
+  if (unitId && uid && String(uid).toLowerCase() !== unitId) return;
+  seen[id] = true;
+  hits.push({ resource_id: id, title: String(title || ''), unit_id: String(uid || '') });
+};
+const walk = (node, depth, inSet, inheritedUnit) => {
+  if (!node || depth > 8) return;
+  if (Array.isArray(node)) {
+    node.slice(0, 80).forEach((item) => walk(item, depth + 1, inSet, inheritedUnit));
+    return;
+  }
+  if (typeof node !== 'object') return;
+  let uid = inheritedUnit;
+  for (const key of unitKeys) {
+    if (node[key]) { uid = node[key]; break; }
+  }
+  const nested = node.learning_resources_set || node.learning_resource_set || node.learningResourcesSet || node.learning_resources;
+  const nextSet = inSet || Array.isArray(nested);
+  for (const key of ridKeys) {
+    if (node[key] && (nextSet || !unitId || (uid && String(uid).toLowerCase() === unitId))) {
+      add(node[key], node.title || node.name || '', uid);
+    }
+  }
+  if (Array.isArray(nested)) walk(nested, depth + 1, true, uid);
+  const keys = Object.keys(node);
+  if (keys.length > 60) return;
+  keys.forEach((key) => {
+    try { walk(node[key], depth + 1, nextSet, uid); } catch (e) {}
+  });
+};
+try { walk(window.__INITIAL_STATE__ || window.__PRELOADED_STATE__ || null, 0, false, ''); } catch (e) {}
+const roots = [document.getElementById('root'), document.getElementById('app'), document.body].filter(Boolean);
+for (const root of roots) {
+  const fiberKey = Object.keys(root).find((key) =>
+    key.startsWith('__reactFiber') || key.startsWith('__reactContainer') || key.startsWith('_reactRootContainer')
+  );
+  if (!fiberKey) continue;
+  try { walk(root[fiberKey], 0, false, ''); } catch (e) {}
 }
 return hits;
 """
@@ -281,7 +424,19 @@ def _human_name(*values) -> str:
 
 
 def _unit_id_of(node: dict) -> str:
-    return str((node or {}).get("unit_id") or (node or {}).get("unitId") or "").strip()
+    if not isinstance(node, dict):
+        return ""
+    for key in (
+        "unit_id",
+        "unitId",
+        "current_unit_id",
+        "currentUnitId",
+        "s_id",
+    ):
+        value = str(node.get(key) or "").strip()
+        if UUID_RE.fullmatch(value):
+            return value
+    return ""
 
 
 def _topic_id_of(node: dict) -> str:
@@ -307,28 +462,98 @@ def _details_dict(node: dict) -> dict:
     return {}
 
 
+RESOURCE_ID_KEYS = (
+    "resource_id",
+    "resourceId",
+    "learning_resource_id",
+    "learningResourceId",
+    "cheat_sheet_id",
+    "cheatsheet_id",
+    "cheatSheetId",
+    "default_resource_id",
+    "defaultResourceId",
+)
+RESOURCE_ID_LIST_KEYS = (
+    "learning_resource_ids",
+    "learningResourceIds",
+    "resource_ids",
+    "resourceIds",
+)
+SET_ID_KEYS = (
+    "learning_resource_set_id",
+    "learningResourceSetId",
+    "learning_set_id",
+    "learningSetId",
+    "set_id",
+    "setId",
+)
+
+
 def resource_id_from_node(node: dict) -> str:
     if not isinstance(node, dict):
         return ""
-    keys = (
-        "resource_id",
-        "resourceId",
-        "learning_resource_id",
-        "learningResourceId",
-        "cheat_sheet_id",
-        "cheatsheet_id",
-        "cheatSheetId",
-    )
-    for key in keys:
+    for key in RESOURCE_ID_KEYS:
         value = str(node.get(key) or "").strip()
         if UUID_RE.fullmatch(value):
             return value
     details = _details_dict(node)
-    for key in keys:
+    for key in RESOURCE_ID_KEYS:
         value = str(details.get(key) or "").strip()
         if UUID_RE.fullmatch(value):
             return value
     return ""
+
+
+def resource_ids_from_lists(node: dict) -> list[str]:
+    if not isinstance(node, dict):
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        value = str(value or "").strip()
+        if UUID_RE.fullmatch(value) and value.lower() not in seen:
+            seen.add(value.lower())
+            found.append(value)
+
+    for source in (node, _details_dict(node)):
+        if not source:
+            continue
+        for key in RESOURCE_ID_LIST_KEYS:
+            items = source.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, str):
+                    add(item)
+                elif isinstance(item, dict):
+                    add(resource_id_from_node(item) or str(item.get("id") or ""))
+    return found
+
+
+def set_ids_from_node(node: dict) -> list[str]:
+    if not isinstance(node, dict):
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    unit_id = _unit_id_of(node).lower()
+
+    def add(value: str) -> None:
+        value = str(value or "").strip()
+        if not UUID_RE.fullmatch(value):
+            return
+        key = value.lower()
+        if key in seen or key == unit_id:
+            return
+        seen.add(key)
+        found.append(value)
+
+    for source in (node, _details_dict(node)):
+        if not source:
+            continue
+        for key in SET_ID_KEYS:
+            add(str(source.get(key) or ""))
+    return found
 
 
 def _install_js_capture(driver: WebDriver) -> None:
@@ -511,13 +736,12 @@ def _url_path(url: str) -> str:
     return (url or "").split("?")[0].rstrip("/").lower()
 
 
+def is_units_details_url(url: str) -> bool:
+    return "units_details" in _url_path(url)
+
+
 def is_units_details_v3_url(url: str) -> bool:
-    path = _url_path(url)
-    return (
-        path.endswith("/topic/units_details/v3")
-        or "/nkb_resources/user/topic/units_details/v3" in path
-        or path.endswith("/units_details/v3")
-    )
+    return is_units_details_url(url)
 
 
 def is_course_details_v4_url(url: str) -> bool:
@@ -529,8 +753,25 @@ def is_course_details_url(url: str) -> bool:
     return "course_details/v3" in path or "course_details/v4" in path
 
 
+def is_current_state_url(url: str) -> bool:
+    return "current_state" in _url_path(url)
+
+
 def is_topic_unit_list_url(url: str) -> bool:
-    return is_units_details_v3_url(url) or is_course_details_url(url)
+    return is_units_details_url(url) or is_course_details_url(url)
+
+
+def is_nkb_json_url(url: str) -> bool:
+    path = _url_path(url)
+    if any(mark in path for mark in ("/otp", "analytics", "segment.io", "media-content", "google")):
+        return False
+    return (
+        "nkb_resources" in path
+        or "nkb_learning" in path
+        or is_set_request_url(url)
+        or is_units_details_url(url)
+        or is_current_state_url(url)
+    )
 
 
 def wait_for_course_details(driver: WebDriver, seen_ids: set[str], timeout: int = CAPTURE_SECONDS):
@@ -570,10 +811,10 @@ def is_set_request_url(url: str) -> bool:
 
 
 def is_unit_content_url(url: str) -> bool:
-    if is_set_request_url(url):
+    if is_set_request_url(url) or is_units_details_url(url) or is_current_state_url(url):
         return True
     path = _url_path(url)
-    if any(mark in path for mark in ("course_details", "units_details", "/otp", "analytics", "login")):
+    if any(mark in path for mark in ("/otp", "analytics", "login", "segment.io", "media-content")):
         return False
     return any(
         mark in path
@@ -605,6 +846,7 @@ def _resource_hits_from_page(driver: WebDriver) -> list[dict]:
                 "resource_id": resource_id,
                 "title": str(item.get("title") or "").strip(),
                 "url": str(item.get("url") or "").strip(),
+                "unit_id": str(item.get("unit_id") or "").strip(),
             }
         )
     return found
@@ -637,59 +879,193 @@ def _payload_from_hits(hits: list[dict]) -> dict:
     }
 
 
-def wait_for_set_details(driver: WebDriver, seen_ids: set[str], timeout: int = CAPTURE_SECONDS):
-    deadline = time.time() + timeout
-    hits = _resource_hits_from_page(driver)
-    while not hits and time.time() < deadline:
-        time.sleep(0.25)
-        hits = _resource_hits_from_page(driver)
-    if hits:
-        return _payload_from_hits(hits), seen_ids, hits[0].get("url") or ""
+def _find_unit_node(payload, unit_id: str):
+    wanted = str(unit_id or "").strip().lower()
+    if not wanted:
+        return None
+    found = None
 
-    captured, seen_ids = collect_json_responses(
-        driver,
-        is_set_request_url,
-        seen_ids,
-        1,
-        "set/cheatsheet",
-        refresh_if_empty=False,
-        require=False,
+    def walk(node) -> None:
+        nonlocal found
+        if found is not None:
+            return
+        if isinstance(node, dict):
+            if _unit_id_of(node).lower() == wanted:
+                found = node
+                return
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return found
+
+
+def resources_for_opened_unit(payload, unit_id: str = "") -> list[dict]:
+    if payload is None:
+        return []
+    set_list_keys = (
+        "learning_resources_set",
+        "learning_resource_set",
+        "learningResourcesSet",
+        "learning_resources",
     )
+    if isinstance(payload, dict):
+        for key in set_list_keys:
+            items = payload.get(key)
+            if isinstance(items, list) and items:
+                found = resources_from_set_payload({key: items})
+                if found:
+                    return found
+        payload_unit = _unit_id_of(payload)
+        if unit_id and payload_unit and payload_unit.lower() == unit_id.lower():
+            found = resources_from_set_payload(payload)
+            if found:
+                return found
+    if unit_id:
+        unit = _find_unit_node(payload, unit_id)
+        if unit is not None:
+            found = resources_from_set_payload(unit)
+            if found:
+                return found
+        if isinstance(payload, dict) and "topics" not in payload and "units_details" not in payload:
+            payload_unit = _unit_id_of(payload)
+            if not payload_unit or payload_unit.lower() == unit_id.lower():
+                found = resources_from_set_payload(payload)
+                if found:
+                    return found
+        return []
+    return resources_from_set_payload(payload)
+
+
+def _dedupe_resources(items: list[dict]) -> list[dict]:
+    found: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        resource_id = str((item or {}).get("resource_id") or "").strip()
+        if not UUID_RE.fullmatch(resource_id) or resource_id.lower() in seen:
+            continue
+        seen.add(resource_id.lower())
+        found.append(
+            {
+                "resource_id": resource_id,
+                "title": str((item or {}).get("title") or "").strip(),
+                "url": str((item or {}).get("url") or "").strip(),
+                "unit_id": str((item or {}).get("unit_id") or "").strip(),
+            }
+        )
+    return found
+
+
+def _resources_from_page(driver: WebDriver, unit_id: str = "") -> tuple[list[dict], str]:
+    wanted = str(unit_id or "").strip().lower()
+    hits = _resource_hits_from_page(driver)
+    captured = _read_js_captured(driver, is_nkb_json_url, set())
+    scoped: list[dict] = []
+    matched_url = ""
+    for url, body in captured:
+        found = resources_for_opened_unit(body, unit_id)
+        if not found:
+            continue
+        for item in found:
+            item["url"] = url
+        scoped.extend(found)
+        matched_url = url
+        if is_set_request_url(url):
+            break
+    if scoped:
+        return _dedupe_resources(scoped), matched_url
+
+    trusted = [
+        item
+        for item in hits
+        if is_set_request_url(item.get("url") or "")
+        or (wanted and str(item.get("unit_id") or "").strip().lower() == wanted)
+    ]
+    if trusted:
+        return _dedupe_resources(trusted), trusted[0].get("url") or ""
+    if hits and not wanted:
+        return _dedupe_resources(hits), hits[0].get("url") or ""
+    return [], ""
+
+
+def _probe_set_apis(
+    driver: WebDriver,
+    unit_id: str,
+    topic_id: str,
+    course_id: str,
+    extra_ids: list[str] | None = None,
+) -> None:
+    try:
+        driver.set_script_timeout(90)
+    except Exception:
+        pass
+    try:
+        driver.execute_async_script(
+            JS_PROBE_SET,
+            unit_id or "",
+            topic_id or "",
+            course_id or "",
+            list(extra_ids or []),
+        )
+    except Exception:
+        pass
+
+
+def _resource_hits_from_page_state(driver: WebDriver, unit_id: str) -> list[dict]:
+    try:
+        items = driver.execute_script(JS_PAGE_RESOURCE_IDS, unit_id or "") or []
+    except Exception:
+        items = []
+    return _dedupe_resources([item for item in items if isinstance(item, dict)])
+
+
+def wait_for_set_details(
+    driver: WebDriver,
+    seen_ids: set[str],
+    timeout: int = 12,
+    unit_id: str = "",
+    topic_id: str = "",
+    course_id: str = "",
+    extra_ids: list[str] | None = None,
+):
+    resources, matched_url = _resources_from_page(driver, unit_id)
+    if resources:
+        return _payload_from_hits(resources), seen_ids, matched_url
+
+    _probe_set_apis(driver, unit_id, topic_id, course_id, extra_ids)
+    deadline = time.time() + max(timeout, 6)
+    while time.time() < deadline:
+        resources, matched_url = _resources_from_page(driver, unit_id)
+        if resources:
+            return _payload_from_hits(resources), seen_ids, matched_url
+        time.sleep(0.3)
+
     extra, seen_ids = collect_json_responses(
         driver,
-        is_unit_content_url,
+        is_nkb_json_url,
         seen_ids,
-        1,
-        "unit content API",
+        2,
+        "nkb resource JSON",
         refresh_if_empty=False,
         require=False,
+        return_early=False,
     )
-    captured.extend(extra)
-    hits = _resource_hits_from_page(driver)
-    if hits:
-        return _payload_from_hits(hits), seen_ids, hits[0].get("url") or ""
-    chosen = [(url, body) for url, body in captured if resources_from_set_payload(body)]
-    if chosen:
-        url, body = chosen[-1]
-        return body, seen_ids, url
+    for url, body in extra:
+        found = resources_for_opened_unit(body, unit_id)
+        if found:
+            return _payload_from_hits(found), seen_ids, url
 
-    captured, seen_ids = collect_json_responses(
-        driver,
-        is_set_request_url,
-        seen_ids,
-        timeout,
-        "set/cheatsheet",
-        refresh_if_empty=True,
-        require=False,
-    )
-    hits = _resource_hits_from_page(driver)
-    if hits:
-        return _payload_from_hits(hits), seen_ids, hits[0].get("url") or ""
-    chosen = [(url, body) for url, body in captured if resources_from_set_payload(body)]
-    if not chosen and not captured:
-        raise ExtractError("Could not capture set/cheatsheet from the network log.")
-    url, body = (chosen or captured)[-1]
-    return body, seen_ids, url
+    page_hits = _resource_hits_from_page_state(driver, unit_id)
+    if page_hits:
+        return _payload_from_hits(page_hits), seen_ids, "page-state"
+
+    resources, matched_url = _resources_from_page(driver, unit_id)
+    if resources:
+        return _payload_from_hits(resources), seen_ids, matched_url
+    raise ExtractError("Could not capture set/cheatsheet from the network log.")
 
 
 def resources_from_set_payload(payload) -> list[dict]:
@@ -727,6 +1103,10 @@ def resources_from_set_payload(payload) -> list[dict]:
         if resource_id and resource_id not in seen:
             seen.add(resource_id)
             found.append({"resource_id": resource_id, "title": title})
+        for extra_id in resource_ids_from_lists(node):
+            if extra_id not in seen:
+                seen.add(extra_id)
+                found.append({"resource_id": extra_id, "title": title})
 
     def walk(node, inherited_title: str = "") -> None:
         if isinstance(node, dict):
@@ -1078,7 +1458,7 @@ def wait_for_topic_units(
         is_topic_unit_list_url,
         seen_ids,
         timeout,
-        "units_details/v3 or course_details/v4",
+        "units_details or course_details",
         refresh_if_empty=True,
         require=True,
         return_early=False,
@@ -1109,10 +1489,10 @@ def wait_for_topic_units(
             v4_units = units
     if v3_units:
         topic_name = topic_name_from_captured(captured, topic_id)
-        return v3_payload, seen_ids, v3_units, "v3", len(v3_units), topic_name
+        return v3_payload, seen_ids, v3_units, "units_details", len(v3_units), topic_name
     if v4_units:
         topic_name = topic_name_from_captured(captured, topic_id)
-        return v4_payload, seen_ids, v4_units, "v4", len(v4_units), topic_name
+        return v4_payload, seen_ids, v4_units, "course_details", len(v4_units), topic_name
     raise ExtractError(f"Could not capture units for topic {topic_id}.")
 
 
@@ -1283,6 +1663,7 @@ def as_unit_record(course_id: str, topic_id: str, topic_name: str, unit: dict) -
         "unit_type": unit_type_of(unit),
         "resource_content_type": unit_resource_content_type(unit),
         "resource_id": resource_id_from_node(unit),
+        "set_ids": set_ids_from_node(unit),
     }
 
 
@@ -1513,17 +1894,31 @@ def collect_set_resources(
         _fresh_open(driver, set_url)
         set_payload = None
         matched_url = ""
+        extra_ids = [item for item in (unit.get("set_ids") or []) if UUID_RE.fullmatch(str(item or ""))]
         try:
-            set_payload, seen_ids, matched_url = wait_for_set_details(driver, seen_ids)
+            set_payload, seen_ids, matched_url = wait_for_set_details(
+                driver,
+                seen_ids,
+                unit_id=str(unit.get("unit_id") or ""),
+                topic_id=str(unit.get("topic_id") or ""),
+                course_id=str(unit.get("course_id") or ""),
+                extra_ids=extra_ids,
+            )
         except ExtractError:
             set_payload = None
         resources = resources_from_set_payload(set_payload) if set_payload is not None else []
+        if not resources:
+            resources, matched_url = _resources_from_page(driver, str(unit.get("unit_id") or ""))
         if matched_url:
             log(f"  Captured API: {matched_url}")
         if not resources:
-            seen_urls = _js_captured_urls(driver)
+            seen_urls = [
+                url
+                for url in _js_captured_urls(driver)
+                if is_nkb_json_url(url) or "nkb" in url.lower()
+            ]
             if seen_urls:
-                log("  Network JSON seen: " + " | ".join(seen_urls[-10:]))
+                log("  Network JSON seen: " + " | ".join(seen_urls[-12:]))
             fallback_id = str(unit.get("resource_id") or "").strip()
             if UUID_RE.fullmatch(fallback_id):
                 log("  Using resource_id from the topic unit payload.")

@@ -130,14 +130,14 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "version": "v9-resources"})
+    return jsonify({"ok": True, "version": "v11-admin-login"})
 
 
 @app.get("/__version")
 def version():
     return jsonify(
         {
-            "version": "v9-resources",
+            "version": "v11-admin-login",
             "template": str(BASE_DIR / "templates" / "index.html"),
         }
     )
@@ -159,7 +159,7 @@ def start_extract():
         ), 400
 
     username = (payload.get("username") or "").strip()
-    password = payload.get("password") or ""
+    password = (payload.get("password") or "").strip()
     raw_ids = payload.get("resource_ids") or ""
     raw_course = (payload.get("course_id") or "").strip()
     raw_phone = (payload.get("phone") or "").strip()

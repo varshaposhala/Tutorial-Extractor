@@ -158,6 +158,8 @@ if submitted:
         unit_refs = parse_unit_refs(unit_ids_raw) if task == "unit" else []
         topic_id = parse_topic_id(topic_id_raw) if topic_id_raw.strip() else ""
         topic_refs = parse_topic_refs(topic_ids_raw) if task == "topic" else []
+        username = (username or "").strip()
+        password = (password or "").strip()
         if not username or not password:
             raise ExtractError("Admin username and password are required.")
         if task == "resource" and not resource_ids:
